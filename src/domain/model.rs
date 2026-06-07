@@ -95,6 +95,16 @@ impl WeatherElement {
             Self::LiftedIndex => "lifted_index",
         }
     }
+
+    pub fn open_meteo_s3_variable(self) -> Option<&'static str> {
+        match self {
+            Self::PressureLevelTemperature
+            | Self::PressureLevelRelativeHumidity
+            | Self::PressureLevelWindSpeed
+            | Self::PressureLevelWindDirection => None,
+            _ => Some(self.as_str()),
+        }
+    }
 }
 
 impl Display for WeatherModelId {

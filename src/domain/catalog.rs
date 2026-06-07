@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn falls_back_using_injected_policy_rule() {
-        let registry = open_meteo::source_registry();
+        let registry = open_meteo::OpenMeteoSources.registry();
         let catalog = WeatherElementCatalog::new(RuleBasedModelPriorityPolicy::new(
             vec![
                 WeatherModelId::EcmwfIfs025,

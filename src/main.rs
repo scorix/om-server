@@ -8,7 +8,7 @@ use om_server::ServerConfig;
 use om_server::application::spatial::SpatialService;
 use om_server::error::MainError;
 use om_server::r#gen::om_spatial_service_server::OmSpatialServiceServer;
-use om_server::infrastructure::{OmfilesDatasetReader, S3ObjectFetcher, open_meteo};
+use om_server::infrastructure::{OmfilesDatasetReader, S3ObjectFetcher, open_meteo::OpenMeteoSources};
 use om_server::interfaces::grpc::spatial_service::GrpcSpatialService;
 
 #[tokio::main]
@@ -19,7 +19,7 @@ async fn main() -> Result<(), MainError> {
         .init();
 
     let config = ServerConfig::parse();
-    let registry = open_meteo::source_registry();
+    let registry = OpenMeteoSources.registry();
     let fetcher = S3ObjectFetcher::new(config.s3_base_url.clone(), config.om_sync_dir.clone());
     let service = Arc::new(SpatialService::new(
         registry,

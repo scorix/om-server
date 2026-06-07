@@ -158,12 +158,14 @@ fn real_shanghai_temperature_sequence_matches_open_meteo_shape() {
 #[test]
 #[ignore = "hits the public Open-Meteo S3 bucket"]
 fn reads_real_spatial_elements_for_all_models() {
-    let registry = open_meteo::source_registry();
+    let registry = open_meteo::OpenMeteoSources.registry();
+    let catalog = open_meteo::OpenMeteoS3Catalog::default();
     for model in WeatherModelId::all() {
         let source = registry
             .get(*model)
             .unwrap_or_else(|| panic!("missing source for {model}"));
-        let published = open_meteo::list_published_variables(model.as_str())
+        let published = catalog
+            .list_published_variables(model.as_str())
             .unwrap_or_else(|error| panic!("list S3 variables for {model}: {error}"))
             .into_iter()
             .collect::<HashSet<_>>();

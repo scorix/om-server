@@ -20,20 +20,20 @@ impl WeatherDataSource for Gfs025Source {
     }
 
     fn supported_layouts(&self) -> &'static [DataLayout] {
-        &[DataLayout::Spatial, DataLayout::Timeseries]
+        &[DataLayout::Spatial, DataLayout::Timeseries, DataLayout::Run]
     }
 
     fn supported_elements(&self, layout: DataLayout) -> &'static [WeatherElement] {
         match layout {
             DataLayout::Spatial => SPATIAL_ELEMENTS,
-            DataLayout::Timeseries => TIMESERIES_ELEMENTS,
+            DataLayout::Timeseries | DataLayout::Run => TIMESERIES_ELEMENTS,
         }
     }
 
     fn variable_name(&self, layout: DataLayout, element: WeatherElement) -> Option<&'static str> {
         self.supported_elements(layout)
             .contains(&element)
-            .then(|| super::standard_variable_name(element))
+            .then(|| element.open_meteo_s3_variable())
             .flatten()
     }
 
@@ -42,7 +42,7 @@ impl WeatherDataSource for Gfs025Source {
         run_ref: &str,
         timestamp: &str,
     ) -> Result<ObjectKey, DataSourceError> {
-        super::spatial_object_key("ncep_gfs025", run_ref, timestamp)
+        super::OpenMeteoSpatialLayout::GFS025.object_key(run_ref, timestamp)
     }
 
     fn timeseries_object_key(
@@ -50,8 +50,11 @@ impl WeatherDataSource for Gfs025Source {
         variable: &str,
         chunk: &str,
     ) -> Result<ObjectKey, DataSourceError> {
-        let _ = (variable, chunk);
-        Err(DataSourceError::TimeseriesNotImplemented)
+        Ok(super::OpenMeteoTimeseriesLayout::GFS025.object_key(variable, chunk))
+    }
+
+    fn run_object_key(&self, run_prefix: &str, variable: &str) -> ObjectKey {
+        super::OpenMeteoRunLayout::GFS025.object_key_in_prefix(run_prefix, variable)
     }
 }
 

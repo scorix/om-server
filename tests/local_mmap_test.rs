@@ -16,7 +16,7 @@ fn reads_local_mmap_fixture() {
         .read_meta(DatasetLocation::LocalFile(path.clone()))
         .expect("read meta");
     assert_eq!(meta.local_path, path);
-    assert_eq!(meta.variables.len(), 1);
+    assert_eq!(meta.variables.len(), 3);
     assert_eq!(meta.variables[0].name, "temperature_2m");
     assert_eq!(meta.variables[0].data_type, "float_array");
     assert!(!meta.variables[0].dimensions.is_empty());

@@ -3,15 +3,62 @@ mod common;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use om_server::application::spatial::SpatialPointReader;
 use om_server::application::spatial::SpatialService;
-use om_server::domain::ObjectKey;
-use om_server::error::HttpError;
+use om_server::domain::{DataLayout, ObjectKey, WeatherDataSource, WeatherElement, WeatherModelId};
+use om_server::error::{DataSourceError, HttpError};
 use om_server::r#gen::GetSpatialMetaRequest;
 use om_server::infrastructure::http::HttpClient;
 use om_server::infrastructure::{
     HttpRangeReader, OmfilesDatasetReader, S3ObjectFetcher, open_meteo,
 };
 use omfiles::reader::OmFileReader;
+
+struct SingleElementSource;
+
+impl WeatherDataSource for SingleElementSource {
+    fn model_id(&self) -> WeatherModelId {
+        WeatherModelId::EcmwfIfs025
+    }
+
+    fn supported_layouts(&self) -> &'static [DataLayout] {
+        &[DataLayout::Spatial]
+    }
+
+    fn supported_elements(&self, layout: DataLayout) -> &'static [WeatherElement] {
+        match layout {
+            DataLayout::Spatial => &[WeatherElement::Temperature2m],
+            DataLayout::Timeseries | DataLayout::Run => &[],
+        }
+    }
+
+    fn variable_name(&self, layout: DataLayout, element: WeatherElement) -> Option<&'static str> {
+        match (layout, element) {
+            (DataLayout::Spatial, WeatherElement::Temperature2m) => Some("temperature_2m"),
+            _ => None,
+        }
+    }
+
+    fn spatial_object_key(
+        &self,
+        _run_ref: &str,
+        _timestamp: &str,
+    ) -> Result<ObjectKey, DataSourceError> {
+        unimplemented!()
+    }
+
+    fn timeseries_object_key(
+        &self,
+        _variable: &str,
+        _chunk: &str,
+    ) -> Result<ObjectKey, DataSourceError> {
+        unimplemented!()
+    }
+
+    fn run_object_key(&self, _run_prefix: &str, _variable: &str) -> ObjectKey {
+        unimplemented!()
+    }
+}
 
 struct MapClient {
     files: Mutex<HashMap<String, Vec<u8>>>,
@@ -66,7 +113,7 @@ fn range_http_backend_reads_fixture_metadata() {
     let reader = OmFileReader::new(Arc::new(backend)).expect("reader");
     let meta =
         OmfilesDatasetReader::read_meta_from_reader(reader, Default::default()).expect("meta");
-    assert_eq!(meta.variables.len(), 1);
+    assert_eq!(meta.variables.len(), 3);
     assert_eq!(meta.variables[0].name, "temperature_2m");
 }
 
@@ -80,7 +127,7 @@ fn spatial_service_returns_synced_metadata() {
     let temp = tempfile::tempdir().expect("tempdir");
     let fetcher = S3ObjectFetcher::with_client("https://example.test", temp.path(), client);
     let service = SpatialService::new(
-        open_meteo::source_registry(),
+        open_meteo::OpenMeteoSources.registry(),
         fetcher,
         OmfilesDatasetReader,
         true,
@@ -93,7 +140,7 @@ fn spatial_service_returns_synced_metadata() {
         })
         .expect("spatial meta");
     assert_eq!(response.model, "ecmwf_ifs025");
-    assert_eq!(response.variables.len(), 1);
+    assert_eq!(response.variables.len(), 3);
     assert!(std::path::Path::new(&response.local_path).exists());
     let key = ObjectKey(response.object_key.clone());
     assert_eq!(
@@ -101,4 +148,43 @@ fn spatial_service_returns_synced_metadata() {
         std::path::PathBuf::from(response.local_path)
     );
     temp.close().expect("cleanup tempdir");
+}
+
+#[test]
+fn read_supported_spatial_point_reads_every_listed_element() {
+    let bytes = common::write_sample_spatial_om().expect("write fixture");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("sample.om");
+    std::fs::write(&path, bytes).expect("write fixture");
+    let source = SingleElementSource;
+    let elements = SpatialPointReader::element_names(&source);
+    let values = SpatialPointReader::read_at(&source, &path, 47.0, 11.0).expect("read point");
+    assert_eq!(values.len(), elements.len());
+    assert_eq!(values[0].element, "temperature_2m");
+    assert!(values[0].value.is_finite());
+}
+
+#[test]
+fn ecmwf_spatial_catalog_lists_all_spatial_elements() {
+    let registry = open_meteo::OpenMeteoSources.registry();
+    let source = registry
+        .get(WeatherModelId::EcmwfIfs025)
+        .expect("ecmwf source");
+    let elements = SpatialPointReader::element_names(source);
+    assert_eq!(
+        elements,
+        vec![
+            "temperature_2m",
+            "relative_humidity_2m",
+            "precipitation",
+            "snow_depth",
+            "cloud_cover",
+            "cloud_cover_low",
+            "cloud_cover_mid",
+            "cloud_cover_high",
+            "surface_temperature",
+            "shortwave_radiation",
+            "cape",
+        ]
+    );
 }

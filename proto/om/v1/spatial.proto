@@ -6,6 +6,8 @@ service OmSpatialService {
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
   rpc GetSpatialMeta(GetSpatialMetaRequest) returns (GetSpatialMetaResponse);
+  rpc GetSpatialPointSeries(GetSpatialPointSeriesRequest)
+      returns (GetSpatialPointSeriesResponse);
 }
 
 message HealthRequest {}
@@ -44,4 +46,29 @@ message VariableMeta {
   string data_type = 2;
   repeated uint64 dimensions = 3;
   repeated uint64 chunks = 4;
+}
+
+message GetSpatialPointSeriesRequest {
+  string model = 1;
+  double latitude = 2;
+  double longitude = 3;
+  uint32 days = 4;
+}
+
+message GetSpatialPointSeriesResponse {
+  string model = 1;
+  string run_ref = 2;
+  repeated string elements = 3;
+  repeated SpatialPointSample samples = 4;
+}
+
+message SpatialPointSample {
+  string timestamp = 1;
+  string valid_date = 2;
+  repeated SpatialElementValue values = 3;
+}
+
+message SpatialElementValue {
+  string element = 1;
+  double value = 2;
 }

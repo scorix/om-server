@@ -40,4 +40,14 @@ impl OmSpatialServiceRpc for GrpcSpatialService {
             .map(Response::new)
             .map_err(|error| Status::invalid_argument(format!("{error:#}")))
     }
+
+    async fn get_spatial_point_series(
+        &self,
+        request: Request<crate::r#gen::GetSpatialPointSeriesRequest>,
+    ) -> Result<Response<crate::r#gen::GetSpatialPointSeriesResponse>, Status> {
+        self.inner
+            .get_spatial_point_series(request.into_inner())
+            .map(Response::new)
+            .map_err(|error| Status::invalid_argument(format!("{error:#}")))
+    }
 }

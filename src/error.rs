@@ -43,9 +43,6 @@ pub struct ModelParseError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DataSourceError {
-    #[error("data/ timeseries layout is not implemented yet")]
-    TimeseriesNotImplemented,
-
     #[error(transparent)]
     Timestamp(#[from] TimestampParseError),
 }
@@ -257,6 +254,24 @@ pub enum OpenMeteoError {
 
     #[error(transparent)]
     Timestamp(#[from] TimestampParseError),
+
+    #[error("no S3 prefixes under {prefix}")]
+    MissingS3Prefix { prefix: String },
+
+    #[error("invalid spatial object key {object_key}")]
+    InvalidSpatialObjectKey { object_key: String },
+
+    #[error("no spatial objects under {prefix}")]
+    NoSpatialObjects { prefix: String },
+
+    #[error("invalid run object key {object_key}")]
+    InvalidRunObjectKey { object_key: String },
+
+    #[error("no run variables under {prefix}")]
+    NoRunVariables { prefix: String },
+
+    #[error("invalid timeseries object key {object_key}")]
+    InvalidTimeseriesObjectKey { object_key: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -282,6 +297,12 @@ pub enum SpatialServiceError {
 
     #[error(transparent)]
     Dataset(#[from] DatasetError),
+
+    #[error(transparent)]
+    OpenMeteo(#[from] OpenMeteoError),
+
+    #[error("spatial point series returned no samples")]
+    EmptyPointSeries,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -104,27 +104,41 @@ impl OmfilesDatasetReader {
     where
         B: OmFileReaderBackend,
     {
-        let variable =
-            find_variable(reader, variable_name).ok_or_else(|| DatasetError::VariableNotFound {
-                variable: variable_name.to_string(),
-            })?;
-        let array = variable
-            .expect_array()
-            .map_err(|source| DatasetError::NotArray {
-                variable: variable_name.to_string(),
-                source,
-            })?;
-        let grid = Self::read_spatial_grid_from_reader(reader, array.get_dimensions())?;
+        let dimensions = variable_dimensions(reader, variable_name)?;
+        let grid = Self::read_spatial_grid_from_reader(reader, &dimensions)?;
         let point = grid
             .point_window(latitude, longitude)
             .map_err(DatasetError::Grid)?;
-        let values =
-            array
+        let values = if reader.name() == variable_name {
+            reader
+                .expect_array()
+                .map_err(|source| DatasetError::NotArray {
+                    variable: variable_name.to_string(),
+                    source,
+                })?
                 .read::<f32>(&point.ranges)
                 .map_err(|source| DatasetError::ReadVariable {
                     variable: variable_name.to_string(),
                     source,
-                })?;
+                })?
+        } else {
+            let variable = find_variable(reader, variable_name).ok_or_else(|| {
+                DatasetError::VariableNotFound {
+                    variable: variable_name.to_string(),
+                }
+            })?;
+            variable
+                .expect_array()
+                .map_err(|source| DatasetError::NotArray {
+                    variable: variable_name.to_string(),
+                    source,
+                })?
+                .read::<f32>(&point.ranges)
+                .map_err(|source| DatasetError::ReadVariable {
+                    variable: variable_name.to_string(),
+                    source,
+                })?
+        };
         point
             .value(
                 values
@@ -135,6 +149,38 @@ impl OmfilesDatasetReader {
             )
             .map_err(DatasetError::Grid)
     }
+}
+
+fn variable_dimensions<B>(
+    reader: &OmFileReader<B>,
+    variable_name: &str,
+) -> Result<Vec<u64>, DatasetError>
+where
+    B: OmFileReaderBackend,
+{
+    if reader.name() == variable_name {
+        return Ok(reader
+            .expect_array()
+            .map_err(|source| DatasetError::NotArray {
+                variable: variable_name.to_string(),
+                source,
+            })?
+            .get_dimensions()
+            .to_vec());
+    }
+    let variable = find_variable(reader, variable_name).ok_or_else(|| {
+        DatasetError::VariableNotFound {
+            variable: variable_name.to_string(),
+        }
+    })?;
+    Ok(variable
+        .expect_array()
+        .map_err(|source| DatasetError::NotArray {
+            variable: variable_name.to_string(),
+            source,
+        })?
+        .get_dimensions()
+        .to_vec())
 }
 
 fn find_variable<B>(reader: &OmFileReader<B>, name: &str) -> Option<OmFileReader<B>>

@@ -50,7 +50,15 @@ pub fn write_sample_spatial_om() -> Result<Vec<u8>, FixtureError> {
         )?;
         writer.write_data(array.view(), None, None)?;
         let variable_meta = writer.finalize();
-        let variable = file_writer.write_array(variable_meta, "temperature_2m", &[])?;
+        let coordinates = file_writer.write_scalar("lat lon".to_string(), "coordinates", &[])?;
+        let crs_wkt = file_writer.write_scalar(
+            "GEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433],AXIS[\"Lat\",NORTH],AXIS[\"Lon\",EAST]] BBOX[-90,-180,90,180]]"
+                .to_string(),
+            "crs_wkt",
+            &[],
+        )?;
+        let variable =
+            file_writer.write_array(variable_meta, "temperature_2m", &[coordinates, crs_wkt])?;
         file_writer.write_trailer(variable)?;
     }
 
