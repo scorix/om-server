@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package om.v1;
+
+service OmSpatialService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
+  rpc GetSpatialMeta(GetSpatialMetaRequest) returns (GetSpatialMetaResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool ok = 1;
+  string service = 2;
+}
+
+message ListSourcesRequest {}
+
+message ListSourcesResponse {
+  repeated Source sources = 1;
+}
+
+message Source {
+  string model = 1;
+  repeated string layouts = 2;
+}
+
+message GetSpatialMetaRequest {
+  string model = 1;
+  string run_ref = 2;
+  string timestamp = 3;
+}
+
+message GetSpatialMetaResponse {
+  string model = 1;
+  string object_key = 2;
+  string local_path = 3;
+  repeated VariableMeta variables = 4;
+}
+
+message VariableMeta {
+  string name = 1;
+  string data_type = 2;
+  repeated uint64 dimensions = 3;
+  repeated uint64 chunks = 4;
+}

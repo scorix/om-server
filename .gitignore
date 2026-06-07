@@ -1,0 +1,10 @@
+/target/
+
+# Local runtime data synced from Open-Meteo S3.
+/data/sync/
+
+# Partial downloads and local environment files.
+*.partial
+*.part
+.env
+.DS_Store

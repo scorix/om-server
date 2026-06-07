@@ -1,0 +1,14 @@
+version: v2
+clean: true
+plugins:
+  - remote: buf.build/community/neoeinstein-prost:v0.5.0
+    out: gen
+    opt:
+      - compile_well_known_types
+      - extern_path=.google.protobuf=::prost_types
+  - remote: buf.build/community/neoeinstein-tonic:v0.5.0
+    out: gen
+    opt:
+      - compile_well_known_types
+      - extern_path=.google.protobuf=::prost_types
+      - no_client
