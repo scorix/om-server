@@ -3,9 +3,13 @@ mod common;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use om_server::application::active_catalog::ActiveSpatialCatalog;
 use om_server::application::spatial::SpatialPointReader;
 use om_server::application::spatial::SpatialService;
-use om_server::domain::{DataLayout, ObjectKey, WeatherDataSource, WeatherElement, WeatherModelId};
+use om_server::domain::{
+    DataLayout, ObjectFetcher, ObjectKey, SpatialObjectLocal, SpatialRunSnapshot,
+    WeatherDataSource, WeatherElement, WeatherModelId,
+};
 use om_server::error::{DataSourceError, HttpError};
 use om_server::r#gen::GetSpatialMetaRequest;
 use om_server::infrastructure::http::HttpClient;
@@ -15,6 +19,53 @@ use om_server::infrastructure::{
 use omfiles::reader::OmFileReader;
 
 struct SingleElementSource;
+
+struct TwoElementSource;
+
+impl WeatherDataSource for TwoElementSource {
+    fn model_id(&self) -> WeatherModelId {
+        WeatherModelId::EcmwfIfs025
+    }
+
+    fn supported_layouts(&self) -> &'static [DataLayout] {
+        &[DataLayout::Spatial]
+    }
+
+    fn supported_elements(&self, layout: DataLayout) -> &'static [WeatherElement] {
+        match layout {
+            DataLayout::Spatial => &[WeatherElement::Temperature2m, WeatherElement::Precipitation],
+            DataLayout::Timeseries | DataLayout::Run => &[],
+        }
+    }
+
+    fn variable_name(&self, layout: DataLayout, element: WeatherElement) -> Option<&'static str> {
+        match (layout, element) {
+            (DataLayout::Spatial, WeatherElement::Temperature2m) => Some("temperature_2m"),
+            (DataLayout::Spatial, WeatherElement::Precipitation) => Some("precipitation"),
+            _ => None,
+        }
+    }
+
+    fn spatial_object_key(
+        &self,
+        _run_ref: &str,
+        _timestamp: &str,
+    ) -> Result<ObjectKey, DataSourceError> {
+        unimplemented!()
+    }
+
+    fn timeseries_object_key(
+        &self,
+        _variable: &str,
+        _chunk: &str,
+    ) -> Result<ObjectKey, DataSourceError> {
+        unimplemented!()
+    }
+
+    fn run_object_key(&self, _run_prefix: &str, _variable: &str) -> ObjectKey {
+        unimplemented!()
+    }
+}
 
 impl WeatherDataSource for SingleElementSource {
     fn model_id(&self) -> WeatherModelId {
@@ -126,11 +177,33 @@ fn spatial_service_returns_synced_metadata() {
     };
     let temp = tempfile::tempdir().expect("tempdir");
     let fetcher = S3ObjectFetcher::with_client("https://example.test", temp.path(), client);
+    let key =
+        ObjectKey("data_spatial/ecmwf_ifs025/2024/02/03/0000Z/2024-02-03T0000.om".to_string());
+    fetcher.sync_object(&key).expect("sync");
+    let local_path = fetcher.synced_path(&key);
+    let catalog = Arc::new(ActiveSpatialCatalog::new());
+    catalog
+        .publish(
+            temp.path(),
+            Arc::new(SpatialRunSnapshot {
+                model: WeatherModelId::EcmwfIfs025,
+                reference_time: "2024-02-03T0000Z".to_string(),
+                run_ref: "0000Z".to_string(),
+                objects: vec![SpatialObjectLocal {
+                    object_key: key.0.clone(),
+                    timestamp: "2024-02-03T0000".to_string(),
+                    valid_date: "2024-02-03".to_string(),
+                    local_path: local_path.clone(),
+                }],
+            }),
+        )
+        .expect("publish snapshot");
     let service = SpatialService::new(
         open_meteo::OpenMeteoSources.registry(),
         fetcher,
         OmfilesDatasetReader,
-        true,
+        catalog,
+        vec![WeatherModelId::EcmwfIfs025],
     );
     let response = service
         .get_spatial_meta(GetSpatialMetaRequest {
@@ -148,6 +221,20 @@ fn spatial_service_returns_synced_metadata() {
         std::path::PathBuf::from(response.local_path)
     );
     temp.close().expect("cleanup tempdir");
+}
+
+#[test]
+fn read_at_skips_variables_missing_from_timestep_file() {
+    let bytes = common::write_sample_spatial_om().expect("write fixture");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("sample.om");
+    std::fs::write(&path, bytes).expect("write fixture");
+
+    let values =
+        SpatialPointReader::read_at(&TwoElementSource, &path, 47.0, 11.0).expect("read point");
+
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0].element, "temperature_2m");
 }
 
 #[test]
@@ -177,11 +264,15 @@ fn ecmwf_spatial_catalog_lists_all_spatial_elements() {
             "temperature_2m",
             "relative_humidity_2m",
             "precipitation",
+            "snowfall",
             "snow_depth",
             "cloud_cover",
             "cloud_cover_low",
             "cloud_cover_mid",
             "cloud_cover_high",
+            "wind_u_component_10m",
+            "wind_v_component_10m",
+            "wind_gusts_10m",
             "surface_temperature",
             "shortwave_radiation",
             "cape",

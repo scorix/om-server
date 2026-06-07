@@ -139,20 +139,29 @@ impl SpatialGrid {
 
 impl InterpolationWindow {
     pub fn interpolate(&self, values: &[f32]) -> Result<f64, GridError> {
-        if values.len() != 4 {
-            return Err(GridError::InvalidInterpolationWindow {
-                count: values.len(),
-            });
+        match values.len() {
+            4 => {
+                let value_at = |lat_offset: usize, lon_offset: usize| -> f64 {
+                    let mut offsets = [0usize; 2];
+                    offsets[self.lat_axis] = lat_offset;
+                    offsets[self.lon_axis] = lon_offset;
+                    values[offsets[0] * 2 + offsets[1]] as f64
+                };
+                let lower_lat =
+                    value_at(0, 0) * (1.0 - self.lon_weight) + value_at(0, 1) * self.lon_weight;
+                let upper_lat =
+                    value_at(1, 0) * (1.0 - self.lon_weight) + value_at(1, 1) * self.lon_weight;
+                Ok(lower_lat * (1.0 - self.lat_weight) + upper_lat * self.lat_weight)
+            }
+            2 if self.indices[0] == self.indices[1] => {
+                Ok(values[0] as f64 * (1.0 - self.lon_weight) + values[1] as f64 * self.lon_weight)
+            }
+            2 if self.indices[2] == self.indices[3] => {
+                Ok(values[0] as f64 * (1.0 - self.lat_weight) + values[1] as f64 * self.lat_weight)
+            }
+            1 => Ok(values[0] as f64),
+            count => Err(GridError::InvalidInterpolationWindow { count }),
         }
-        let value_at = |lat_offset: usize, lon_offset: usize| -> f64 {
-            let mut offsets = [0usize; 2];
-            offsets[self.lat_axis] = lat_offset;
-            offsets[self.lon_axis] = lon_offset;
-            values[offsets[0] * 2 + offsets[1]] as f64
-        };
-        let lower_lat = value_at(0, 0) * (1.0 - self.lon_weight) + value_at(0, 1) * self.lon_weight;
-        let upper_lat = value_at(1, 0) * (1.0 - self.lon_weight) + value_at(1, 1) * self.lon_weight;
-        Ok(lower_lat * (1.0 - self.lat_weight) + upper_lat * self.lat_weight)
     }
 }
 
@@ -200,4 +209,38 @@ fn normalize_longitude(longitude: f64, min_longitude: f64) -> f64 {
         normalized -= 360.0;
     }
     normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_grid() -> SpatialGrid {
+        SpatialGrid::from_metadata(SpatialGridMetadata {
+            dimensions: vec![3, 3],
+            coordinates: "lat lon".to_string(),
+            crs_wkt: "BBOX[-90,-180,90,180]".to_string(),
+        })
+        .expect("grid")
+    }
+
+    #[test]
+    fn interpolation_window_uses_four_neighboring_cells() {
+        let grid = sample_grid();
+        let window = grid.interpolation_window(0.0, 0.0).expect("window");
+        assert_eq!(window.ranges[0], 1..3);
+        assert_eq!(window.ranges[1], 1..3);
+    }
+
+    #[test]
+    fn bilinear_interpolation_weights_corner_values() {
+        let grid = sample_grid();
+        let window = grid.interpolation_window(45.0, 90.0).expect("window");
+        assert!((window.lat_weight - 0.5).abs() < 1e-9);
+        assert!((window.lon_weight - 0.5).abs() < 1e-9);
+        let value = window
+            .interpolate(&[10.0, 20.0, 30.0, 40.0])
+            .expect("interpolate");
+        assert!((value - 25.0).abs() < 1e-9);
+    }
 }

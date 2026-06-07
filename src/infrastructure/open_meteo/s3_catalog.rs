@@ -1,36 +1,7 @@
-use std::collections::BTreeMap;
-
-use crate::domain::{DataLayout, WeatherModelId};
+use crate::domain::{DataLayout, SpatialObjectRef, SpatialRun, WeatherModelId};
 use crate::error::OpenMeteoError;
 
 const DEFAULT_OPEN_METEO_S3_BASE_URL: &str = "https://openmeteo.s3.amazonaws.com";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpatialObjectRef {
-    pub object_key: String,
-    pub timestamp: String,
-    pub valid_date: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpatialRun {
-    pub run_prefix: String,
-    pub run_ref: String,
-    pub objects: Vec<SpatialObjectRef>,
-}
-
-impl SpatialRun {
-    pub fn grouped_by_date(&self) -> BTreeMap<String, Vec<SpatialObjectRef>> {
-        let mut grouped: BTreeMap<String, Vec<SpatialObjectRef>> = BTreeMap::new();
-        for object in &self.objects {
-            grouped
-                .entry(object.valid_date.clone())
-                .or_default()
-                .push(object.clone());
-        }
-        grouped
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeseriesChunkRef {
@@ -71,7 +42,10 @@ impl OpenMeteoS3Catalog {
         &self.base_url
     }
 
-    pub fn load_latest_spatial_run(&self, model: WeatherModelId) -> Result<SpatialRun, OpenMeteoError> {
+    pub fn load_latest_spatial_run(
+        &self,
+        model: WeatherModelId,
+    ) -> Result<SpatialRun, OpenMeteoError> {
         let run_prefix = self.latest_dated_run_prefix(DataLayout::Spatial, model)?;
         let objects = self.list_spatial_objects(&run_prefix)?;
         if objects.is_empty() {
@@ -80,8 +54,9 @@ impl OpenMeteoS3Catalog {
             });
         }
         Ok(SpatialRun {
+            reference_time: String::new(),
+            run_prefix: run_prefix.clone(),
             run_ref: Self::run_ref_from_prefix(&run_prefix),
-            run_prefix,
             objects,
         })
     }
@@ -157,7 +132,10 @@ impl OpenMeteoS3Catalog {
         Ok(chunks)
     }
 
-    pub fn list_published_variables(&self, model_path: &str) -> Result<Vec<String>, OpenMeteoError> {
+    pub fn list_published_variables(
+        &self,
+        model_path: &str,
+    ) -> Result<Vec<String>, OpenMeteoError> {
         let prefix = format!("data/{model_path}/");
         let body = self.list_s3(&prefix, Some("/"), None)?;
         Ok(self
@@ -185,7 +163,10 @@ impl OpenMeteoS3Catalog {
         self.latest_common_prefix(&day_prefix)
     }
 
-    fn list_spatial_objects(&self, run_prefix: &str) -> Result<Vec<SpatialObjectRef>, OpenMeteoError> {
+    pub(crate) fn list_spatial_objects(
+        &self,
+        run_prefix: &str,
+    ) -> Result<Vec<SpatialObjectRef>, OpenMeteoError> {
         let mut objects = Vec::new();
         for key in self.list_object_keys(run_prefix)? {
             if !key.ends_with(".om") || key.contains("_model-level") {
@@ -216,7 +197,7 @@ impl OpenMeteoS3Catalog {
         Ok(objects)
     }
 
-    fn run_ref_from_prefix(run_prefix: &str) -> String {
+    pub(crate) fn run_ref_from_prefix(run_prefix: &str) -> String {
         run_prefix
             .trim_end_matches('/')
             .rsplit('/')
@@ -258,6 +239,28 @@ impl OpenMeteoS3Catalog {
             }
         }
         Ok(keys)
+    }
+
+    pub(crate) fn fetch_text(&self, url: &str) -> Result<String, OpenMeteoError> {
+        use std::io::Read;
+
+        let mut response =
+            ureq::get(url)
+                .call()
+                .map_err(|source| OpenMeteoError::FetchRequest {
+                    url: url.to_string(),
+                    source,
+                })?;
+        let mut body = String::new();
+        response
+            .body_mut()
+            .as_reader()
+            .read_to_string(&mut body)
+            .map_err(|source| OpenMeteoError::ReadFetchResponse {
+                url: url.to_string(),
+                source,
+            })?;
+        Ok(body)
     }
 
     fn list_s3(

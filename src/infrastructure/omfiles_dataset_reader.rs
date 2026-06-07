@@ -106,8 +106,8 @@ impl OmfilesDatasetReader {
     {
         let dimensions = variable_dimensions(reader, variable_name)?;
         let grid = Self::read_spatial_grid_from_reader(reader, &dimensions)?;
-        let point = grid
-            .point_window(latitude, longitude)
+        let window = grid
+            .interpolation_window(latitude, longitude)
             .map_err(DatasetError::Grid)?;
         let values = if reader.name() == variable_name {
             reader
@@ -116,7 +116,7 @@ impl OmfilesDatasetReader {
                     variable: variable_name.to_string(),
                     source,
                 })?
-                .read::<f32>(&point.ranges)
+                .read::<f32>(&window.ranges)
                 .map_err(|source| DatasetError::ReadVariable {
                     variable: variable_name.to_string(),
                     source,
@@ -133,14 +133,14 @@ impl OmfilesDatasetReader {
                     variable: variable_name.to_string(),
                     source,
                 })?
-                .read::<f32>(&point.ranges)
+                .read::<f32>(&window.ranges)
                 .map_err(|source| DatasetError::ReadVariable {
                     variable: variable_name.to_string(),
                     source,
                 })?
         };
-        point
-            .value(
+        window
+            .interpolate(
                 values
                     .as_slice()
                     .ok_or_else(|| DatasetError::NonContiguousValues {
@@ -168,11 +168,10 @@ where
             .get_dimensions()
             .to_vec());
     }
-    let variable = find_variable(reader, variable_name).ok_or_else(|| {
-        DatasetError::VariableNotFound {
+    let variable =
+        find_variable(reader, variable_name).ok_or_else(|| DatasetError::VariableNotFound {
             variable: variable_name.to_string(),
-        }
-    })?;
+        })?;
     Ok(variable
         .expect_array()
         .map_err(|source| DatasetError::NotArray {

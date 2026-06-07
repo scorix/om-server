@@ -43,11 +43,7 @@ model_layouts!(OpenMeteoTimeseriesLayout);
 model_layouts!(OpenMeteoRunLayout);
 
 impl OpenMeteoSpatialLayout {
-    pub fn object_key(
-        self,
-        run_ref: &str,
-        timestamp: &str,
-    ) -> Result<ObjectKey, DataSourceError> {
+    pub fn object_key(self, run_ref: &str, timestamp: &str) -> Result<ObjectKey, DataSourceError> {
         let date = RunDate::from_timestamp(timestamp)?;
         Ok(ObjectKey(format!(
             "data_spatial/{}/{:04}/{:02}/{:02}/{run_ref}/{timestamp}.om",
@@ -58,10 +54,7 @@ impl OpenMeteoSpatialLayout {
 
 impl OpenMeteoTimeseriesLayout {
     pub fn object_key(self, variable: &str, chunk: &str) -> ObjectKey {
-        ObjectKey(format!(
-            "data/{}/{variable}/{chunk}.om",
-            self.model_path
-        ))
+        ObjectKey(format!("data/{}/{variable}/{chunk}.om", self.model_path))
     }
 }
 
@@ -98,12 +91,13 @@ pub struct RunDate {
 
 impl RunDate {
     pub fn from_timestamp(timestamp: &str) -> Result<Self, TimestampParseError> {
-        let date = timestamp
-            .split('T')
-            .next()
-            .ok_or_else(|| TimestampParseError::InvalidFormat {
-                timestamp: timestamp.to_string(),
-            })?;
+        let date =
+            timestamp
+                .split('T')
+                .next()
+                .ok_or_else(|| TimestampParseError::InvalidFormat {
+                    timestamp: timestamp.to_string(),
+                })?;
         let mut parts = date.split('-');
         let year = parts
             .next()

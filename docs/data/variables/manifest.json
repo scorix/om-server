@@ -1,0 +1,47 @@
+{
+  "ecmwf_ifs025": {
+    "run": {
+      "reference_time": "2026-06-07T06:00:00Z",
+      "temporal_resolution_seconds": 10800,
+      "count": 114
+    },
+    "spatial": {
+      "reference_time": "2026-06-07T06:00:00Z",
+      "temporal_resolution_seconds": null,
+      "count": 119
+    },
+    "timeseries": {
+      "count": 158
+    }
+  },
+  "ncep_gfs025": {
+    "run": {
+      "reference_time": "2026-06-07T12:00:00Z",
+      "temporal_resolution_seconds": 3600,
+      "count": 105
+    },
+    "spatial": {
+      "reference_time": "2026-06-07T12:00:00Z",
+      "temporal_resolution_seconds": null,
+      "count": 316
+    },
+    "timeseries": {
+      "count": 317
+    }
+  },
+  "dwd_icon": {
+    "run": {
+      "reference_time": "2026-06-07T12:00:00Z",
+      "temporal_resolution_seconds": 3600,
+      "count": 107
+    },
+    "spatial": {
+      "reference_time": "2026-06-07T12:00:00Z",
+      "temporal_resolution_seconds": null,
+      "count": 123
+    },
+    "timeseries": {
+      "count": 134
+    }
+  }
+}

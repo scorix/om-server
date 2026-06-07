@@ -27,6 +27,8 @@ pub enum WeatherElement {
     WindSpeed10m,
     WindDirection10m,
     WindGusts10m,
+    WindUComponent10m,
+    WindVComponent10m,
     WindSpeed80m,
     WindGusts80m,
     Visibility,
@@ -77,6 +79,8 @@ impl WeatherElement {
             Self::WindSpeed10m => "wind_speed_10m",
             Self::WindDirection10m => "wind_direction_10m",
             Self::WindGusts10m => "wind_gusts_10m",
+            Self::WindUComponent10m => "wind_u_component_10m",
+            Self::WindVComponent10m => "wind_v_component_10m",
             Self::WindSpeed80m => "wind_speed_80m",
             Self::WindGusts80m => "wind_gusts_80m",
             Self::Visibility => "visibility",
@@ -96,13 +100,33 @@ impl WeatherElement {
         }
     }
 
+    /// Open-Meteo fixed ratio when deriving API [`snowfall`] (cm) from model
+    /// [`snowfall_water_equivalent`] (mm): 7 cm fresh snow ≈ 10 mm liquid water.
+    ///
+    /// [`snowfall`]: https://open-meteo.com/en/docs
+    /// [`snowfall_water_equivalent`]: https://github.com/open-meteo/open-data
+    pub const SNOWFALL_CM_PER_WATER_EQUIVALENT_MM: f64 = 7.0 / 10.0;
+
     pub fn open_meteo_s3_variable(self) -> Option<&'static str> {
         match self {
             Self::PressureLevelTemperature
             | Self::PressureLevelRelativeHumidity
             | Self::PressureLevelWindSpeed
             | Self::PressureLevelWindDirection => None,
+            // S3 carries model-native snowfall water equivalent (mm), not API name `snowfall`.
+            Self::Snowfall => Some("snowfall_water_equivalent"),
             _ => Some(self.as_str()),
+        }
+    }
+
+    /// Converts a raw S3 scalar to Open-Meteo API units for spatial gRPC responses.
+    ///
+    /// [`Self::Snowfall`]: S3 stores `snowfall_water_equivalent` in mm; multiply by
+    /// [`Self::SNOWFALL_CM_PER_WATER_EQUIVALENT_MM`] (7/10) to match API `snowfall` in cm.
+    pub fn normalize_spatial_value(self, raw: f64) -> f64 {
+        match self {
+            Self::Snowfall => raw * Self::SNOWFALL_CM_PER_WATER_EQUIVALENT_MM,
+            _ => raw,
         }
     }
 }
@@ -125,5 +149,20 @@ impl FromStr for WeatherModelId {
                 value: other.to_string(),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WeatherElement;
+
+    #[test]
+    fn snowfall_maps_to_s3_variable_and_normalizes_to_api_cm() {
+        assert_eq!(WeatherElement::Snowfall.as_str(), "snowfall");
+        assert_eq!(
+            WeatherElement::Snowfall.open_meteo_s3_variable(),
+            Some("snowfall_water_equivalent")
+        );
+        assert_eq!(WeatherElement::Snowfall.normalize_spatial_value(10.0), 7.0);
     }
 }

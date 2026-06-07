@@ -27,10 +27,8 @@ fn builds_all_layout_object_keys() {
         "data/ecmwf_ifs025/temperature_2m/chunk_1523.om"
     );
 
-    let run = OpenMeteoRunLayout::ECMWF_IFS025.object_key_in_prefix(
-        "data_run/ecmwf_ifs025/2026/06/07/0000Z/",
-        "temperature_2m",
-    );
+    let run = OpenMeteoRunLayout::ECMWF_IFS025
+        .object_key_in_prefix("data_run/ecmwf_ifs025/2026/06/07/0000Z/", "temperature_2m");
     assert_eq!(
         run.0,
         "data_run/ecmwf_ifs025/2026/06/07/0000Z/temperature_2m.om"

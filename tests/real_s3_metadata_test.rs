@@ -323,12 +323,12 @@ fn sync_om_from_url(url: &str) -> Result<PathBuf, RealS3TestError> {
         return Ok(path);
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| RealS3TestError::Http(
-            HttpError::CreateDir {
+        std::fs::create_dir_all(parent).map_err(|source| {
+            RealS3TestError::Http(HttpError::CreateDir {
                 path: parent.to_path_buf(),
                 source,
-            },
-        ))?;
+            })
+        })?;
     }
     UreqHttpClient
         .download_to(url, &path)
@@ -371,6 +371,8 @@ fn assert_plausible(element: WeatherElement, value: f64) {
         | WeatherElement::WindGusts10m
         | WeatherElement::WindSpeed80m
         | WeatherElement::WindGusts80m
+        | WeatherElement::WindUComponent10m
+        | WeatherElement::WindVComponent10m
         | WeatherElement::Visibility
         | WeatherElement::ShortwaveRadiation
         | WeatherElement::SunshineDuration
@@ -613,14 +615,12 @@ fn list_s3(
         url.push_str("&continuation-token=");
         url.push_str(&url_encode(token));
     }
-    let mut response = ureq::get(&url)
-        .call()
-        .map_err(|source| {
-            RealS3TestError::Http(HttpError::Request {
-                url: url.clone(),
-                source,
-            })
-        })?;
+    let mut response = ureq::get(&url).call().map_err(|source| {
+        RealS3TestError::Http(HttpError::Request {
+            url: url.clone(),
+            source,
+        })
+    })?;
     let mut body = String::new();
     response
         .body_mut()

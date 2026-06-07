@@ -4,3 +4,5 @@
 mod om_v1;
 
 pub use om_v1::*;
+
+pub const FILE_DESCRIPTOR_SET: &[u8] = om_v1::FILE_DESCRIPTOR_SET;

@@ -8,11 +8,15 @@ const SPATIAL_ELEMENTS: &[WeatherElement] = &[
     WeatherElement::Temperature2m,
     WeatherElement::RelativeHumidity2m,
     WeatherElement::Precipitation,
+    WeatherElement::Snowfall,
     WeatherElement::SnowDepth,
     WeatherElement::CloudCover,
     WeatherElement::CloudCoverLow,
     WeatherElement::CloudCoverMid,
     WeatherElement::CloudCoverHigh,
+    WeatherElement::WindUComponent10m,
+    WeatherElement::WindVComponent10m,
+    WeatherElement::WindGusts10m,
     WeatherElement::SurfaceTemperature,
     WeatherElement::ShortwaveRadiation,
     WeatherElement::Cape,
@@ -22,6 +26,7 @@ const TIMESERIES_ELEMENTS: &[WeatherElement] = &[
     WeatherElement::Temperature2m,
     WeatherElement::RelativeHumidity2m,
     WeatherElement::Precipitation,
+    WeatherElement::Snowfall,
     WeatherElement::SnowDepth,
     WeatherElement::WindGusts10m,
     WeatherElement::CloudCover,
@@ -109,19 +114,14 @@ mod tests {
         let key = source
             .timeseries_object_key("temperature_2m", "chunk_1523")
             .expect("object key");
-        assert_eq!(
-            key.0,
-            "data/ecmwf_ifs025/temperature_2m/chunk_1523.om"
-        );
+        assert_eq!(key.0, "data/ecmwf_ifs025/temperature_2m/chunk_1523.om");
     }
 
     #[test]
     fn builds_run_object_key() {
         let source = EcmwfIfs025Source;
-        let key = source.run_object_key(
-            "data_run/ecmwf_ifs025/2026/06/07/0000Z/",
-            "temperature_2m",
-        );
+        let key =
+            source.run_object_key("data_run/ecmwf_ifs025/2026/06/07/0000Z/", "temperature_2m");
         assert_eq!(
             key.0,
             "data_run/ecmwf_ifs025/2026/06/07/0000Z/temperature_2m.om"

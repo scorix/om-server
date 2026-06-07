@@ -9,6 +9,7 @@ const SPATIAL_ELEMENTS: &[WeatherElement] = &[
     WeatherElement::RelativeHumidity2m,
     WeatherElement::Precipitation,
     WeatherElement::Rain,
+    WeatherElement::Snowfall,
     WeatherElement::SnowDepth,
     WeatherElement::FreezingLevelHeight,
     WeatherElement::WeatherCode,

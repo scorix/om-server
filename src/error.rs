@@ -239,6 +239,33 @@ pub enum DatasetError {
 #[derive(Debug, thiserror::Error)]
 pub enum OpenMeteoError {
     #[error("GET {url}")]
+    FetchRequest {
+        url: String,
+        #[source]
+        source: ureq::Error,
+    },
+
+    #[error("read response body for {url}")]
+    ReadFetchResponse {
+        url: String,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("parse run manifest at {url}")]
+    ParseRunManifest {
+        url: String,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error("invalid run manifest reference_time {reference_time}")]
+    InvalidManifestReferenceTime { reference_time: String },
+
+    #[error("invalid run manifest valid_time {valid_time}")]
+    InvalidManifestValidTime { valid_time: String },
+
+    #[error("GET {url}")]
     ListRequest {
         url: String,
         #[source]
@@ -275,6 +302,62 @@ pub enum OpenMeteoError {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub enum ActiveCatalogError {
+    #[error("serialize active manifest for {model}")]
+    SerializeManifest {
+        model: crate::domain::WeatherModelId,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error("write active manifest at {path}")]
+    WriteManifest {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("read active manifest at {path}")]
+    ReadManifest {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("parse active manifest at {path}")]
+    ParseManifest {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SyncWorkerError {
+    #[error("unknown model {model}")]
+    UnknownModel {
+        model: crate::domain::WeatherModelId,
+    },
+
+    #[error("spatial run for {model} has no objects")]
+    EmptyRun {
+        model: crate::domain::WeatherModelId,
+    },
+
+    #[error(transparent)]
+    DataSource(#[from] DataSourceError),
+
+    #[error(transparent)]
+    Sync(#[from] SyncError),
+
+    #[error(transparent)]
+    OpenMeteo(#[from] OpenMeteoError),
+
+    #[error(transparent)]
+    ActiveCatalog(#[from] ActiveCatalogError),
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum SpatialServiceError {
     #[error("unsupported model {model}")]
     UnsupportedModel {
@@ -285,6 +368,9 @@ pub enum SpatialServiceError {
 
     #[error("unknown model {model}")]
     UnknownModel { model: String },
+
+    #[error("no active spatial run for model {model}")]
+    NotReady { model: String },
 
     #[error("object {object_key} is not synced at {path}")]
     NotSynced { object_key: String, path: PathBuf },
@@ -312,6 +398,22 @@ pub enum MainError {
         address: String,
         #[source]
         source: std::net::AddrParseError,
+    },
+
+    #[error("invalid sync model {model}")]
+    InvalidSyncModel {
+        model: String,
+        #[source]
+        source: ModelParseError,
+    },
+
+    #[error(transparent)]
+    ActiveCatalog(#[from] ActiveCatalogError),
+
+    #[error("failed to build gRPC reflection service")]
+    Reflection {
+        #[source]
+        source: tonic_reflection::server::Error,
     },
 
     #[error(transparent)]
