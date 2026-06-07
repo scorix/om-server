@@ -2,33 +2,38 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
-
-use crate::domain::{ObjectKey, OmFetcher, OmReaderBackend, SourceRegistry, WeatherModelId};
+use crate::domain::{
+    DatasetLocation, DatasetReader, ObjectFetcher, ObjectKey, SourceRegistry, WeatherModelId,
+};
+use crate::error::SpatialServiceError;
 use crate::r#gen::{
     GetSpatialMetaRequest, GetSpatialMetaResponse, HealthResponse, ListSourcesResponse, Source,
     VariableMeta as ProtoVariableMeta,
 };
-use crate::infrastructure::{OmDatasetReader, S3OmFetcher};
+use crate::infrastructure::{OmfilesDatasetReader, S3ObjectFetcher};
 
-pub struct SpatialService<F = S3OmFetcher> {
+pub struct SpatialService<F = S3ObjectFetcher, R = OmfilesDatasetReader> {
     registry: SourceRegistry,
     fetcher: Arc<F>,
+    dataset_reader: Arc<R>,
     sync_on_request: bool,
 }
 
-impl<F> SpatialService<F>
+impl<F, R> SpatialService<F, R>
 where
-    F: OmFetcher + Send + Sync + 'static,
+    F: ObjectFetcher + Send + Sync + 'static,
+    R: DatasetReader + Send + Sync + 'static,
 {
     pub fn new(
         registry: SourceRegistry,
         fetcher: F,
+        dataset_reader: R,
         sync_on_request: bool,
     ) -> Self {
         Self {
             registry,
             fetcher: Arc::new(fetcher),
+            dataset_reader: Arc::new(dataset_reader),
             sync_on_request,
         }
     }
@@ -60,26 +65,33 @@ where
     pub fn get_spatial_meta(
         &self,
         request: GetSpatialMetaRequest,
-    ) -> Result<GetSpatialMetaResponse> {
-        let model = WeatherModelId::from_str(&request.model)
-            .with_context(|| format!("unsupported model {}", request.model))?;
+    ) -> Result<GetSpatialMetaResponse, SpatialServiceError> {
+        let model = WeatherModelId::from_str(&request.model).map_err(|source| {
+            SpatialServiceError::UnsupportedModel {
+                model: request.model.clone(),
+                source,
+            }
+        })?;
         let source = self
             .registry
             .get(model)
-            .with_context(|| format!("unknown model {}", request.model))?;
+            .ok_or_else(|| SpatialServiceError::UnknownModel {
+                model: request.model.clone(),
+            })?;
         let object_key = source.spatial_object_key(&request.run_ref, &request.timestamp)?;
         if self.sync_on_request {
             self.fetcher.sync_object(&object_key)?;
         }
         let local_path = self.fetcher.synced_path(&object_key);
         if !local_path.exists() {
-            bail!(
-                "object {} is not synced at {}",
-                object_key.0,
-                local_path.display()
-            );
+            return Err(SpatialServiceError::NotSynced {
+                object_key: object_key.0,
+                path: local_path,
+            });
         }
-        let meta = OmDatasetReader::read_meta(OmReaderBackend::LocalMmap(local_path.clone()))?;
+        let meta = self
+            .dataset_reader
+            .read_meta(DatasetLocation::LocalFile(local_path.clone()))?;
         Ok(GetSpatialMetaResponse {
             model: model.to_string(),
             object_key: object_key.0,

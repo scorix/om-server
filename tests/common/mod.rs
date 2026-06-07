@@ -1,6 +1,14 @@
-use anyhow::Result;
-use ndarray::ArrayD;
-use omfiles::{OmFilesError, OmCompressionType, traits::OmFileWriterBackend, writer::OmFileWriter};
+use ndarray::{ArrayD, ShapeError};
+use omfiles::{OmCompressionType, OmFilesError, traits::OmFileWriterBackend, writer::OmFileWriter};
+
+#[derive(Debug, thiserror::Error)]
+pub enum FixtureError {
+    #[error(transparent)]
+    Shape(#[from] ShapeError),
+
+    #[error(transparent)]
+    Om(#[from] OmFilesError),
+}
 
 #[derive(Default)]
 struct VecWriter {
@@ -18,12 +26,15 @@ impl OmFileWriterBackend for &mut VecWriter {
     }
 }
 
-pub fn write_sample_spatial_om() -> Result<Vec<u8>> {
+pub fn write_sample_spatial_om() -> Result<Vec<u8>, FixtureError> {
     let data: Vec<f32> = vec![0.0, 5.0, 2.0, 3.0, 2.0, 5.0, 6.0, 2.0, 8.0, 3.0];
     let shape = vec![1, data.len() as u64];
     let chunks = vec![1, 5];
     let array = ArrayD::from_shape_vec(
-        shape.iter().map(|value| *value as usize).collect::<Vec<_>>(),
+        shape
+            .iter()
+            .map(|value| *value as usize)
+            .collect::<Vec<_>>(),
         data,
     )?;
 

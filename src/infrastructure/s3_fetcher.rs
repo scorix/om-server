@@ -1,20 +1,19 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
-
-use crate::domain::{ObjectKey, OmFetcher};
+use crate::domain::{ObjectFetcher, ObjectKey};
+use crate::error::SyncError;
 
 use super::http::{HttpClient, UreqHttpClient};
 
 #[derive(Debug, Clone)]
-pub struct S3OmFetcher<C = UreqHttpClient> {
+pub struct S3ObjectFetcher<C = UreqHttpClient> {
     base_url: String,
     sync_dir: PathBuf,
     client: Arc<C>,
 }
 
-impl S3OmFetcher<UreqHttpClient> {
+impl S3ObjectFetcher<UreqHttpClient> {
     pub fn new(base_url: impl Into<String>, sync_dir: impl Into<PathBuf>) -> Self {
         Self {
             base_url: base_url.into(),
@@ -24,7 +23,7 @@ impl S3OmFetcher<UreqHttpClient> {
     }
 }
 
-impl<C> S3OmFetcher<C>
+impl<C> S3ObjectFetcher<C>
 where
     C: HttpClient + 'static,
 {
@@ -49,11 +48,11 @@ where
     }
 }
 
-impl<C> OmFetcher for S3OmFetcher<C>
+impl<C> ObjectFetcher for S3ObjectFetcher<C>
 where
     C: HttpClient + Send + Sync + 'static,
 {
-    fn sync_object(&self, object_key: &ObjectKey) -> Result<()> {
+    fn sync_object(&self, object_key: &ObjectKey) -> Result<(), SyncError> {
         let dest = self.synced_path(object_key);
         if dest.exists() {
             return Ok(());
@@ -61,7 +60,11 @@ where
         let url = self.object_url(object_key);
         self.client
             .download_to(&url, &dest)
-            .with_context(|| format!("sync {} to {}", url, dest.display()))
+            .map_err(|source| SyncError::Download {
+                url,
+                path: dest,
+                source: Box::new(source),
+            })
     }
 
     fn synced_path(&self, object_key: &ObjectKey) -> PathBuf {
@@ -76,6 +79,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use crate::error::HttpError;
 
     #[derive(Default)]
     struct MapClient {
@@ -83,31 +87,39 @@ mod tests {
     }
 
     impl HttpClient for MapClient {
-        fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError> {
             self.files
                 .lock()
                 .expect("lock")
                 .get(url)
                 .cloned()
-                .with_context(|| format!("missing fixture for {url}"))
+                .ok_or_else(|| HttpError::MissingFixture {
+                    url: url.to_string(),
+                })
         }
 
-        fn download_to(&self, url: &str, path: &Path) -> Result<()> {
+        fn download_to(&self, url: &str, path: &Path) -> Result<(), HttpError> {
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
+                std::fs::create_dir_all(parent).map_err(|source| HttpError::CreateDir {
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
             }
-            std::fs::write(path, self.get_bytes(url)?)?;
+            std::fs::write(path, self.get_bytes(url)?).map_err(|source| HttpError::WriteFile {
+                path: path.to_path_buf(),
+                source,
+            })?;
             Ok(())
         }
 
-        fn get_range(&self, url: &str, offset: u64, count: u64) -> Result<Vec<u8>> {
+        fn get_range(&self, url: &str, offset: u64, count: u64) -> Result<Vec<u8>, HttpError> {
             let bytes = self.get_bytes(url)?;
             let start = offset as usize;
             let end = start.saturating_add(count as usize).min(bytes.len());
             Ok(bytes[start..end].to_vec())
         }
 
-        fn probe_content_length(&self, url: &str) -> Result<u64> {
+        fn probe_content_length(&self, url: &str) -> Result<u64, HttpError> {
             Ok(self.get_bytes(url)?.len() as u64)
         }
     }
@@ -121,10 +133,9 @@ mod tests {
                 .to_string(),
             b"fixture".to_vec(),
         );
-        let fetcher = S3OmFetcher::with_client("https://example.test", temp.path(), client);
-        let key = ObjectKey(
-            "data_spatial/ecmwf_ifs025/2024/02/03/0000Z/2024-02-03T0000.om".to_string(),
-        );
+        let fetcher = S3ObjectFetcher::with_client("https://example.test", temp.path(), client);
+        let key =
+            ObjectKey("data_spatial/ecmwf_ifs025/2024/02/03/0000Z/2024-02-03T0000.om".to_string());
         fetcher.sync_object(&key).expect("sync");
         let synced = fetcher.synced_path(&key);
         assert!(synced.exists());

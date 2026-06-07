@@ -3,43 +3,54 @@ mod common;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use omfiles::reader::OmFileReader;
 use om_server::application::spatial::SpatialService;
-use om_server::domain::{ObjectKey, SourceRegistry};
+use om_server::domain::ObjectKey;
+use om_server::error::HttpError;
 use om_server::r#gen::GetSpatialMetaRequest;
-use om_server::infrastructure::{OmDatasetReader, RangeHttpBackend, S3OmFetcher};
 use om_server::infrastructure::http::HttpClient;
+use om_server::infrastructure::{
+    HttpRangeReader, OmfilesDatasetReader, S3ObjectFetcher, open_meteo,
+};
+use omfiles::reader::OmFileReader;
 
 struct MapClient {
     files: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 impl HttpClient for MapClient {
-    fn get_bytes(&self, url: &str) -> anyhow::Result<Vec<u8>> {
+    fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError> {
         self.files
             .lock()
             .expect("lock")
             .get(url)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing fixture for {url}"))
+            .ok_or_else(|| HttpError::MissingFixture {
+                url: url.to_string(),
+            })
     }
 
-    fn download_to(&self, url: &str, path: &std::path::Path) -> anyhow::Result<()> {
+    fn download_to(&self, url: &str, path: &std::path::Path) -> Result<(), HttpError> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent).map_err(|source| HttpError::CreateDir {
+                path: parent.to_path_buf(),
+                source,
+            })?;
         }
-        std::fs::write(path, self.get_bytes(url)?)?;
+        std::fs::write(path, self.get_bytes(url)?).map_err(|source| HttpError::WriteFile {
+            path: path.to_path_buf(),
+            source,
+        })?;
         Ok(())
     }
 
-    fn get_range(&self, url: &str, offset: u64, count: u64) -> anyhow::Result<Vec<u8>> {
+    fn get_range(&self, url: &str, offset: u64, count: u64) -> Result<Vec<u8>, HttpError> {
         let bytes = self.get_bytes(url)?;
         let start = offset as usize;
         let end = start.saturating_add(count as usize).min(bytes.len());
         Ok(bytes[start..end].to_vec())
     }
 
-    fn probe_content_length(&self, url: &str) -> anyhow::Result<u64> {
+    fn probe_content_length(&self, url: &str) -> Result<u64, HttpError> {
         Ok(self.get_bytes(url)?.len() as u64)
     }
 }
@@ -51,9 +62,10 @@ fn range_http_backend_reads_fixture_metadata() {
     let client = MapClient {
         files: Mutex::new(HashMap::from([(url.to_string(), bytes)])),
     };
-    let backend = RangeHttpBackend::with_client(url, client).expect("range backend");
+    let backend = HttpRangeReader::with_client(url, client).expect("range backend");
     let reader = OmFileReader::new(Arc::new(backend)).expect("reader");
-    let meta = OmDatasetReader::read_meta_from_reader(reader, Default::default()).expect("meta");
+    let meta =
+        OmfilesDatasetReader::read_meta_from_reader(reader, Default::default()).expect("meta");
     assert_eq!(meta.variables.len(), 1);
     assert_eq!(meta.variables[0].name, "temperature_2m");
 }
@@ -66,8 +78,13 @@ fn spatial_service_returns_synced_metadata() {
         files: Mutex::new(HashMap::from([(url.to_string(), bytes)])),
     };
     let temp = tempfile::tempdir().expect("tempdir");
-    let fetcher = S3OmFetcher::with_client("https://example.test", temp.path(), client);
-    let service = SpatialService::new(SourceRegistry::with_defaults(), fetcher, true);
+    let fetcher = S3ObjectFetcher::with_client("https://example.test", temp.path(), client);
+    let service = SpatialService::new(
+        open_meteo::source_registry(),
+        fetcher,
+        OmfilesDatasetReader,
+        true,
+    );
     let response = service
         .get_spatial_meta(GetSpatialMetaRequest {
             model: "ecmwf_ifs025".to_string(),

@@ -2,8 +2,8 @@ mod common;
 
 use std::path::Path;
 
-use om_server::domain::OmReaderBackend;
-use om_server::infrastructure::OmDatasetReader;
+use om_server::domain::{DatasetLocation, DatasetReader};
+use om_server::infrastructure::OmfilesDatasetReader;
 
 #[test]
 fn reads_local_mmap_fixture() {
@@ -12,7 +12,8 @@ fn reads_local_mmap_fixture() {
     let path = temp.path().join("sample.om");
     std::fs::write(&path, bytes).expect("write om file");
 
-    let meta = OmDatasetReader::read_meta(OmReaderBackend::LocalMmap(path.clone()))
+    let meta = OmfilesDatasetReader
+        .read_meta(DatasetLocation::LocalFile(path.clone()))
         .expect("read meta");
     assert_eq!(meta.local_path, path);
     assert_eq!(meta.variables.len(), 1);

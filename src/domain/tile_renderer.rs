@@ -1,6 +1,5 @@
-use anyhow::{bail, Result};
-
-use super::om_dataset::OmDatasetMeta;
+use crate::domain::DatasetMeta;
+use crate::error::TileRenderError;
 
 pub struct TileRequest {
     pub z: u8,
@@ -10,14 +9,22 @@ pub struct TileRequest {
 }
 
 pub trait WeatherTileRenderer: Send + Sync {
-    fn render(&self, dataset: &OmDatasetMeta, request: &TileRequest) -> Result<Vec<u8>>;
+    fn render(
+        &self,
+        dataset: &DatasetMeta,
+        request: &TileRequest,
+    ) -> Result<Vec<u8>, TileRenderError>;
 }
 
 #[derive(Debug, Default)]
 pub struct NoopWeatherTileRenderer;
 
 impl WeatherTileRenderer for NoopWeatherTileRenderer {
-    fn render(&self, _dataset: &OmDatasetMeta, _request: &TileRequest) -> Result<Vec<u8>> {
-        bail!("weather tile rendering is not implemented")
+    fn render(
+        &self,
+        _dataset: &DatasetMeta,
+        _request: &TileRequest,
+    ) -> Result<Vec<u8>, TileRenderError> {
+        Err(TileRenderError::NotImplemented)
     }
 }

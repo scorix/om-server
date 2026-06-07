@@ -1,8 +1,6 @@
-use std::path::PathBuf;
+use crate::error::DataSourceError;
 
-use anyhow::Result;
-
-use super::model::WeatherModelId;
+use super::model::{WeatherElement, WeatherModelId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataLayout {
@@ -27,9 +25,21 @@ pub trait WeatherDataSource: Send + Sync {
 
     fn supported_layouts(&self) -> &'static [DataLayout];
 
-    fn spatial_object_key(&self, run_ref: &str, timestamp: &str) -> Result<ObjectKey>;
+    fn supported_elements(&self, layout: DataLayout) -> &'static [WeatherElement];
 
-    fn timeseries_object_key(&self, variable: &str, chunk: &str) -> Result<ObjectKey>;
+    fn variable_name(&self, layout: DataLayout, element: WeatherElement) -> Option<&'static str>;
+
+    fn spatial_object_key(
+        &self,
+        run_ref: &str,
+        timestamp: &str,
+    ) -> Result<ObjectKey, DataSourceError>;
+
+    fn timeseries_object_key(
+        &self,
+        variable: &str,
+        chunk: &str,
+    ) -> Result<ObjectKey, DataSourceError>;
 }
 
 pub struct SourceRegistry {
@@ -37,23 +47,14 @@ pub struct SourceRegistry {
 }
 
 impl SourceRegistry {
-    pub fn with_defaults() -> Self {
-        Self {
-            sources: vec![Box::new(
-                crate::infrastructure::ecmwf::EcmwfIfs025SpatialSource,
-            )],
-        }
+    pub fn new(sources: Vec<Box<dyn WeatherDataSource>>) -> Self {
+        Self { sources }
     }
 
     pub fn list(&self) -> Vec<(WeatherModelId, Vec<DataLayout>)> {
         self.sources
             .iter()
-            .map(|source| {
-                (
-                    source.model_id(),
-                    source.supported_layouts().to_vec(),
-                )
-            })
+            .map(|source| (source.model_id(), source.supported_layouts().to_vec()))
             .collect()
     }
 
@@ -63,10 +64,4 @@ impl SourceRegistry {
             .find(|source| source.model_id() == model)
             .map(|source| source.as_ref())
     }
-}
-
-pub trait OmFetcher: Send + Sync {
-    fn sync_object(&self, object_key: &ObjectKey) -> Result<()>;
-
-    fn synced_path(&self, object_key: &ObjectKey) -> PathBuf;
 }

@@ -1,13 +1,18 @@
-pub mod model;
+pub mod catalog;
 pub mod data_source;
-pub mod fetcher;
-pub mod om_dataset;
-pub mod reader_backend;
+pub mod dataset;
+pub mod grid;
+pub mod model;
+pub mod ports;
 pub mod tile_renderer;
 
+pub use catalog::{
+    ModelPriorityPolicy, ModelPriorityRule, PolicyContext, ResolvedElement,
+    RuleBasedModelPriorityPolicy, WeatherElementCatalog,
+};
 pub use data_source::{DataLayout, ObjectKey, SourceRegistry, WeatherDataSource};
-pub use fetcher::OmFetcher;
-pub use model::WeatherModelId;
-pub use om_dataset::{OmDatasetMeta, VariableMeta};
-pub use reader_backend::OmReaderBackend;
+pub use dataset::{DatasetMeta, VariableMeta};
+pub use grid::{InterpolationWindow, PointWindow, SpatialGrid, SpatialGridMetadata};
+pub use model::{WeatherElement, WeatherModelId};
+pub use ports::{DatasetLocation, DatasetReader, ObjectFetcher};
 pub use tile_renderer::{NoopWeatherTileRenderer, TileRequest, WeatherTileRenderer};

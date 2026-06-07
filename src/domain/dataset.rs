@@ -9,7 +9,7 @@ pub struct VariableMeta {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OmDatasetMeta {
+pub struct DatasetMeta {
     pub local_path: PathBuf,
     pub variables: Vec<VariableMeta>,
 }

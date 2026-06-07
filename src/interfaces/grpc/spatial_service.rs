@@ -38,6 +38,6 @@ impl OmSpatialServiceRpc for GrpcSpatialService {
         self.inner
             .get_spatial_meta(request.into_inner())
             .map(Response::new)
-            .map_err(|error| Status::invalid_argument(error.to_string()))
+            .map_err(|error| Status::invalid_argument(format!("{error:#}")))
     }
 }

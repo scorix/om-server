@@ -3,17 +3,19 @@ use std::sync::Arc;
 use omfiles::OmFilesError;
 use omfiles::traits::OmFileReaderBackend;
 
+use crate::error::HttpError;
+
 use super::http::{HttpClient, UreqHttpClient, fetch_range, probe_range_size};
 
 #[derive(Debug, Clone)]
-pub struct RangeHttpBackend<C = UreqHttpClient> {
+pub struct HttpRangeReader<C = UreqHttpClient> {
     url: String,
     size: usize,
     client: Arc<C>,
 }
 
-impl RangeHttpBackend<UreqHttpClient> {
-    pub fn new(url: impl Into<String>) -> anyhow::Result<Self> {
+impl HttpRangeReader<UreqHttpClient> {
+    pub fn new(url: impl Into<String>) -> Result<Self, HttpError> {
         let url = url.into();
         let size = probe_range_size(&UreqHttpClient, &url)? as usize;
         Ok(Self {
@@ -24,11 +26,11 @@ impl RangeHttpBackend<UreqHttpClient> {
     }
 }
 
-impl<C> RangeHttpBackend<C>
+impl<C> HttpRangeReader<C>
 where
     C: HttpClient + 'static,
 {
-    pub fn with_client(url: impl Into<String>, client: C) -> anyhow::Result<Self> {
+    pub fn with_client(url: impl Into<String>, client: C) -> Result<Self, HttpError> {
         let url = url.into();
         let size = probe_range_size(&client, &url)? as usize;
         Ok(Self {
@@ -43,7 +45,7 @@ where
     }
 }
 
-impl<C> OmFileReaderBackend for RangeHttpBackend<C>
+impl<C> OmFileReaderBackend for HttpRangeReader<C>
 where
     C: HttpClient + Send + Sync + 'static,
 {
