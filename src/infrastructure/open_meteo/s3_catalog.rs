@@ -10,19 +10,6 @@ pub struct TimeseriesChunkRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunVariableRef {
-    pub object_key: String,
-    pub variable: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelRunArchive {
-    pub run_prefix: String,
-    pub run_ref: String,
-    pub variables: Vec<RunVariableRef>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenMeteoS3Catalog {
     base_url: String,
 }
@@ -58,42 +45,6 @@ impl OpenMeteoS3Catalog {
             run_prefix: run_prefix.clone(),
             run_ref: Self::run_ref_from_prefix(&run_prefix),
             objects,
-        })
-    }
-
-    pub fn load_latest_run_archive(
-        &self,
-        model: WeatherModelId,
-    ) -> Result<ModelRunArchive, OpenMeteoError> {
-        let run_prefix = self.latest_dated_run_prefix(DataLayout::Run, model)?;
-        let mut variables = Vec::new();
-        for key in self.list_object_keys(&run_prefix)? {
-            if !key.ends_with(".om") {
-                continue;
-            }
-            let variable = key
-                .rsplit('/')
-                .next()
-                .and_then(|name| name.strip_suffix(".om"))
-                .ok_or_else(|| OpenMeteoError::InvalidRunObjectKey {
-                    object_key: key.clone(),
-                })?
-                .to_string();
-            variables.push(RunVariableRef {
-                object_key: key,
-                variable,
-            });
-        }
-        variables.sort_by(|left, right| left.variable.cmp(&right.variable));
-        if variables.is_empty() {
-            return Err(OpenMeteoError::NoRunVariables {
-                prefix: run_prefix.clone(),
-            });
-        }
-        Ok(ModelRunArchive {
-            run_ref: Self::run_ref_from_prefix(&run_prefix),
-            run_prefix,
-            variables,
         })
     }
 

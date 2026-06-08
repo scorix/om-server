@@ -225,10 +225,28 @@ fn reads_real_spatial_elements_for_all_models() {
 fn smoke_elements(model: WeatherModelId) -> &'static [WeatherElement] {
     use WeatherElement::*;
     match model {
-        WeatherModelId::EcmwfIfs025 => &[Temperature2m],
+        WeatherModelId::EcmwfIfs => &[Temperature2m, Visibility],
+        WeatherModelId::EcmwfIfs025 | WeatherModelId::DwdIcon => &[Temperature2m],
         WeatherModelId::Gfs025 => &[Visibility],
-        WeatherModelId::DwdIcon => &[Temperature2m],
     }
+}
+
+#[test]
+#[ignore = "hits the public Open-Meteo S3 bucket"]
+fn prints_real_ecmwf_ifs_spatial_variable_tree() {
+    let url = std::env::var("OM_SERVER_REAL_S3_URL").unwrap_or_else(|_| {
+        discover_latest_spatial_url("ecmwf_ifs").expect("discover real Open-Meteo object")
+    });
+    let local_path = sync_om_from_url(&url).expect("sync spatial .om");
+    let reader = OmFileReader::from_file(
+        local_path
+            .to_str()
+            .expect("local cache path should be UTF-8"),
+    )
+    .expect("om reader");
+
+    eprintln!("url={url} local_path={}", local_path.display());
+    dump_tree(&reader, 0);
 }
 
 #[test]
@@ -345,7 +363,13 @@ fn assert_plausible(element: WeatherElement, value: f64) {
         WeatherElement::Temperature2m
         | WeatherElement::DewPoint2m
         | WeatherElement::ApparentTemperature
-        | WeatherElement::SurfaceTemperature => {
+        | WeatherElement::SurfaceTemperature
+        | WeatherElement::Temperature2mMax
+        | WeatherElement::Temperature2mMin
+        | WeatherElement::SoilTemperature0To7cm
+        | WeatherElement::SoilTemperature7To28cm
+        | WeatherElement::SoilTemperature28To100cm
+        | WeatherElement::SoilTemperature100To255cm => {
             assert!((-100.0..=350.0).contains(&value), "{element:?}={value}");
         }
         WeatherElement::RelativeHumidity2m
@@ -373,7 +397,19 @@ fn assert_plausible(element: WeatherElement, value: f64) {
         | WeatherElement::WindGusts80m
         | WeatherElement::WindUComponent10m
         | WeatherElement::WindVComponent10m
+        | WeatherElement::WindUComponent100m
+        | WeatherElement::WindUComponent200m
+        | WeatherElement::WindVComponent100m
+        | WeatherElement::WindVComponent200m
         | WeatherElement::Visibility
+        | WeatherElement::DirectRadiation
+        | WeatherElement::Showers
+        | WeatherElement::SoilMoisture0To7cm
+        | WeatherElement::SoilMoisture7To28cm
+        | WeatherElement::SoilMoisture28To100cm
+        | WeatherElement::SoilMoisture100To255cm
+        | WeatherElement::TotalColumnIntegratedWaterVapour
+        | WeatherElement::RoughnessLength
         | WeatherElement::ShortwaveRadiation
         | WeatherElement::SunshineDuration
         | WeatherElement::Cape
@@ -387,6 +423,10 @@ fn assert_plausible(element: WeatherElement, value: f64) {
         WeatherElement::PressureLevelRelativeHumidity => {
             assert!((0.0..=100.0).contains(&value), "{element:?}={value}");
         }
+        WeatherElement::BoundaryLayerHeight
+        | WeatherElement::ConvectiveInhibition
+        | WeatherElement::PressureMsl
+        | WeatherElement::RawVariable(_) => {}
     }
 }
 

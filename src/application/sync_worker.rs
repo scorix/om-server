@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::application::active_catalog::ActiveSpatialCatalog;
@@ -15,6 +17,7 @@ pub struct SpatialSyncWorkerConfig {
     pub models: Vec<WeatherModelId>,
     pub forecast_days: usize,
     pub interval: Duration,
+    pub parallelism: usize,
 }
 
 pub struct SpatialSyncWorker<F> {
@@ -26,6 +29,7 @@ pub struct SpatialSyncWorker<F> {
     models: Vec<WeatherModelId>,
     forecast_days: usize,
     interval: Duration,
+    parallelism: usize,
 }
 
 impl<F> SpatialSyncWorker<F>
@@ -47,6 +51,7 @@ where
             models: config.models,
             forecast_days: config.forecast_days,
             interval: config.interval,
+            parallelism: config.parallelism.max(1),
         }
     }
 
@@ -80,6 +85,7 @@ where
             models: self.models.clone(),
             forecast_days: self.forecast_days,
             interval: self.interval,
+            parallelism: self.parallelism,
         }
     }
 
@@ -126,6 +132,7 @@ where
             reference_time = %run.reference_time,
             run_ref = %run.run_ref,
             total = planned_objects.len(),
+            parallelism = self.parallelism,
             "syncing spatial run"
         );
         let snapshot = self.build_snapshot(model, &run, &planned_objects)?;
@@ -156,41 +163,90 @@ where
             return Err(SyncWorkerError::EmptyRun { model });
         }
 
-        let mut objects = Vec::with_capacity(total);
+        let fetcher = self.fetcher.clone();
+        let run_ref = run.run_ref.clone();
+        let parallelism = self.parallelism.min(total);
+        let next_job = AtomicUsize::new(0);
+        let completed = AtomicUsize::new(0);
+        let failure = Mutex::new(None::<SyncWorkerError>);
+        let slots: Vec<Mutex<Option<DownloadedObject>>> =
+            (0..total).map(|_| Mutex::new(None)).collect();
+
+        std::thread::scope(|scope| {
+            for _ in 0..parallelism {
+                scope.spawn(|| {
+                    loop {
+                        if failure.lock().expect("sync failure lock").is_some() {
+                            break;
+                        }
+                        let index = next_job.fetch_add(1, Ordering::Relaxed);
+                        if index >= total {
+                            break;
+                        }
+                        let object = &planned_objects[index];
+                        let object_key = ObjectKey(object.object_key.clone());
+                        let local_path = fetcher.synced_path(&object_key);
+                        let cached = local_path.exists();
+                        if let Err(error) = fetcher.sync_object(&object_key) {
+                            *failure.lock().expect("sync failure lock") =
+                                Some(SyncWorkerError::Sync(error));
+                            break;
+                        }
+                        *slots[index].lock().expect("sync slot lock") = Some(DownloadedObject {
+                            cached,
+                            object: SpatialObjectLocal {
+                                object_key: object_key.0.clone(),
+                                timestamp: object.timestamp.clone(),
+                                valid_date: object.valid_date.clone(),
+                                local_path: local_path.clone(),
+                            },
+                        });
+                        let step = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                        log_object_progress(
+                            model,
+                            &run_ref,
+                            SyncObjectProgress {
+                                step,
+                                total,
+                                object_key: &object_key.0,
+                                timestamp: &object.timestamp,
+                                valid_date: &object.valid_date,
+                                cached,
+                                size_bytes: local_file_size(&local_path),
+                            },
+                        );
+                    }
+                });
+            }
+        });
+
+        if let Some(error) = failure.lock().expect("sync failure lock").take() {
+            return Err(error);
+        }
+
         let mut downloaded = 0usize;
         let mut skipped = 0usize;
-        for (index, object) in planned_objects.iter().enumerate() {
-            let object_key = ObjectKey(object.object_key.clone());
-            let local_path = self.fetcher.synced_path(&object_key);
-            let cached = local_path.exists();
-            self.fetcher
-                .sync_object(&object_key)
-                .map_err(SyncWorkerError::Sync)?;
-            log_object_progress(
-                model,
-                &run.run_ref,
-                SyncObjectProgress {
-                    step: index + 1,
-                    total,
-                    object_key: &object_key.0,
-                    timestamp: &object.timestamp,
-                    valid_date: &object.valid_date,
-                    cached,
-                    size_bytes: local_file_size(&local_path),
-                },
-            );
-            if cached {
-                skipped += 1;
-            } else {
-                downloaded += 1;
-            }
-            objects.push(SpatialObjectLocal {
-                object_key: object_key.0.clone(),
-                timestamp: object.timestamp.clone(),
-                valid_date: object.valid_date.clone(),
-                local_path,
-            });
-        }
+        let objects = slots
+            .into_iter()
+            .enumerate()
+            .map(|(index, slot)| {
+                let slot = slot
+                    .into_inner()
+                    .expect("sync slot lock")
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "missing downloaded object at index {index}: {}",
+                            planned_objects[index].object_key
+                        )
+                    });
+                if slot.cached {
+                    skipped += 1;
+                } else {
+                    downloaded += 1;
+                }
+                slot.object
+            })
+            .collect::<Vec<_>>();
         tracing::info!(
             model = %model,
             run_ref = %run.run_ref,
@@ -238,6 +294,11 @@ where
             "spatial run download complete"
         );
     }
+}
+
+struct DownloadedObject {
+    object: SpatialObjectLocal,
+    cached: bool,
 }
 
 struct SyncObjectProgress<'a> {

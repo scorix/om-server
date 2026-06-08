@@ -1,18 +1,13 @@
 use crate::domain::{DataLayout, ObjectKey, WeatherDataSource, WeatherElement, WeatherModelId};
 use crate::error::DataSourceError;
 
+#[path = "gfs025_catalog.rs"]
+mod gfs025_catalog;
+
+use gfs025_catalog::{GFS025_SPATIAL_ELEMENTS, GFS025_TIMESERIES_ELEMENTS};
+
 #[derive(Debug, Default)]
 pub struct Gfs025Source;
-
-const SPATIAL_ELEMENTS: &[WeatherElement] = &[
-    WeatherElement::FreezingLevelHeight,
-    WeatherElement::WindGusts10m,
-    WeatherElement::Visibility,
-    WeatherElement::Cape,
-    WeatherElement::LiftedIndex,
-];
-
-const TIMESERIES_ELEMENTS: &[WeatherElement] = SPATIAL_ELEMENTS;
 
 impl WeatherDataSource for Gfs025Source {
     fn model_id(&self) -> WeatherModelId {
@@ -20,13 +15,13 @@ impl WeatherDataSource for Gfs025Source {
     }
 
     fn supported_layouts(&self) -> &'static [DataLayout] {
-        &[DataLayout::Spatial, DataLayout::Timeseries, DataLayout::Run]
+        &[DataLayout::Spatial, DataLayout::Timeseries]
     }
 
     fn supported_elements(&self, layout: DataLayout) -> &'static [WeatherElement] {
         match layout {
-            DataLayout::Spatial => SPATIAL_ELEMENTS,
-            DataLayout::Timeseries | DataLayout::Run => TIMESERIES_ELEMENTS,
+            DataLayout::Spatial => GFS025_SPATIAL_ELEMENTS,
+            DataLayout::Timeseries => GFS025_TIMESERIES_ELEMENTS,
         }
     }
 
@@ -51,10 +46,6 @@ impl WeatherDataSource for Gfs025Source {
         chunk: &str,
     ) -> Result<ObjectKey, DataSourceError> {
         Ok(super::OpenMeteoTimeseriesLayout::GFS025.object_key(variable, chunk))
-    }
-
-    fn run_object_key(&self, run_prefix: &str, variable: &str) -> ObjectKey {
-        super::OpenMeteoRunLayout::GFS025.object_key_in_prefix(run_prefix, variable)
     }
 }
 
@@ -82,5 +73,31 @@ mod tests {
             source.variable_name(DataLayout::Spatial, WeatherElement::Visibility),
             Some("visibility")
         );
+    }
+
+    #[test]
+    fn gfs025_spatial_catalog_lists_all_manifest_variables() {
+        let source = Gfs025Source;
+        let elements = source
+            .supported_elements(DataLayout::Spatial)
+            .iter()
+            .map(|element| element.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(elements.len(), 316);
+        assert!(elements.contains(&"visibility".to_string()));
+        assert!(elements.contains(&"geopotential_height_500hPa".to_string()));
+        assert!(elements.contains(&"cloud_cover_850hPa".to_string()));
+    }
+
+    #[test]
+    fn gfs025_timeseries_catalog_lists_all_manifest_variables() {
+        let source = Gfs025Source;
+        let elements = source
+            .supported_elements(DataLayout::Timeseries)
+            .iter()
+            .map(|element| element.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(elements.len(), 317);
+        assert!(elements.contains(&"static".to_string()));
     }
 }

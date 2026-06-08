@@ -6,7 +6,6 @@ use super::model::{WeatherElement, WeatherModelId};
 pub enum DataLayout {
     Spatial,
     Timeseries,
-    Run,
 }
 
 impl DataLayout {
@@ -14,7 +13,6 @@ impl DataLayout {
         match self {
             Self::Spatial => "spatial",
             Self::Timeseries => "timeseries",
-            Self::Run => "run",
         }
     }
 
@@ -22,7 +20,6 @@ impl DataLayout {
         match self {
             Self::Spatial => "data_spatial",
             Self::Timeseries => "data",
-            Self::Run => "data_run",
         }
     }
 }
@@ -50,8 +47,6 @@ pub trait WeatherDataSource: Send + Sync {
         variable: &str,
         chunk: &str,
     ) -> Result<ObjectKey, DataSourceError>;
-
-    fn run_object_key(&self, run_prefix: &str, variable: &str) -> ObjectKey;
 }
 
 pub struct SourceRegistry {

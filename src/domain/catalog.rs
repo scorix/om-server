@@ -41,6 +41,7 @@ impl Default for RuleBasedModelPriorityPolicy {
     fn default() -> Self {
         Self::new(
             vec![
+                WeatherModelId::EcmwfIfs,
                 WeatherModelId::EcmwfIfs025,
                 WeatherModelId::Gfs025,
                 WeatherModelId::DwdIcon,
@@ -104,6 +105,7 @@ mod tests {
         let registry = open_meteo::OpenMeteoSources.registry();
         let catalog = WeatherElementCatalog::new(RuleBasedModelPriorityPolicy::new(
             vec![
+                WeatherModelId::EcmwfIfs,
                 WeatherModelId::EcmwfIfs025,
                 WeatherModelId::Gfs025,
                 WeatherModelId::DwdIcon,

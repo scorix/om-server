@@ -5,6 +5,7 @@ use crate::error::ModelParseError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WeatherModelId {
+    EcmwfIfs,
     EcmwfIfs025,
     Gfs025,
     DwdIcon,
@@ -45,11 +46,35 @@ pub enum WeatherElement {
     PressureLevelWindDirection,
     Cape,
     LiftedIndex,
+    BoundaryLayerHeight,
+    ConvectiveInhibition,
+    DirectRadiation,
+    PressureMsl,
+    Showers,
+    SoilMoisture0To7cm,
+    SoilMoisture7To28cm,
+    SoilMoisture28To100cm,
+    SoilMoisture100To255cm,
+    SoilTemperature0To7cm,
+    SoilTemperature7To28cm,
+    SoilTemperature28To100cm,
+    SoilTemperature100To255cm,
+    Temperature2mMax,
+    Temperature2mMin,
+    TotalColumnIntegratedWaterVapour,
+    WindUComponent100m,
+    WindUComponent200m,
+    WindVComponent100m,
+    WindVComponent200m,
+    RoughnessLength,
+    /// Passthrough for S3 variables without a dedicated variant (e.g. pressure levels).
+    RawVariable(&'static str),
 }
 
 impl WeatherModelId {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::EcmwfIfs => "ecmwf_ifs",
             Self::EcmwfIfs025 => "ecmwf_ifs025",
             Self::Gfs025 => "ncep_gfs025",
             Self::DwdIcon => "dwd_icon",
@@ -57,13 +82,23 @@ impl WeatherModelId {
     }
 
     pub fn all() -> &'static [Self] {
-        &[Self::EcmwfIfs025, Self::Gfs025, Self::DwdIcon]
+        &[
+            Self::EcmwfIfs,
+            Self::EcmwfIfs025,
+            Self::Gfs025,
+            Self::DwdIcon,
+        ]
     }
 }
 
 impl WeatherElement {
+    pub const fn raw(name: &'static str) -> Self {
+        Self::RawVariable(name)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::RawVariable(name) => name,
             Self::Temperature2m => "temperature_2m",
             Self::DewPoint2m => "dew_point_2m",
             Self::RelativeHumidity2m => "relative_humidity_2m",
@@ -97,6 +132,27 @@ impl WeatherElement {
             Self::PressureLevelWindDirection => "pressure_level_wind_direction",
             Self::Cape => "cape",
             Self::LiftedIndex => "lifted_index",
+            Self::BoundaryLayerHeight => "boundary_layer_height",
+            Self::ConvectiveInhibition => "convective_inhibition",
+            Self::DirectRadiation => "direct_radiation",
+            Self::PressureMsl => "pressure_msl",
+            Self::Showers => "showers",
+            Self::SoilMoisture0To7cm => "soil_moisture_0_to_7cm",
+            Self::SoilMoisture7To28cm => "soil_moisture_7_to_28cm",
+            Self::SoilMoisture28To100cm => "soil_moisture_28_to_100cm",
+            Self::SoilMoisture100To255cm => "soil_moisture_100_to_255cm",
+            Self::SoilTemperature0To7cm => "soil_temperature_0_to_7cm",
+            Self::SoilTemperature7To28cm => "soil_temperature_7_to_28cm",
+            Self::SoilTemperature28To100cm => "soil_temperature_28_to_100cm",
+            Self::SoilTemperature100To255cm => "soil_temperature_100_to_255cm",
+            Self::Temperature2mMax => "temperature_2m_max",
+            Self::Temperature2mMin => "temperature_2m_min",
+            Self::TotalColumnIntegratedWaterVapour => "total_column_integrated_water_vapour",
+            Self::WindUComponent100m => "wind_u_component_100m",
+            Self::WindUComponent200m => "wind_u_component_200m",
+            Self::WindVComponent100m => "wind_v_component_100m",
+            Self::WindVComponent200m => "wind_v_component_200m",
+            Self::RoughnessLength => "roughness_length",
         }
     }
 
@@ -109,6 +165,7 @@ impl WeatherElement {
 
     pub fn open_meteo_s3_variable(self) -> Option<&'static str> {
         match self {
+            Self::RawVariable(name) => Some(name),
             Self::PressureLevelTemperature
             | Self::PressureLevelRelativeHumidity
             | Self::PressureLevelWindSpeed
@@ -142,6 +199,7 @@ impl FromStr for WeatherModelId {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "ecmwf_ifs" => Ok(Self::EcmwfIfs),
             "ecmwf_ifs025" => Ok(Self::EcmwfIfs025),
             "ncep_gfs025" | "gfs025" => Ok(Self::Gfs025),
             "dwd_icon" => Ok(Self::DwdIcon),
@@ -155,6 +213,16 @@ impl FromStr for WeatherModelId {
 #[cfg(test)]
 mod tests {
     use super::WeatherElement;
+
+    #[test]
+    fn raw_variable_uses_s3_name_verbatim() {
+        let element = WeatherElement::raw("geopotential_height_500hPa");
+        assert_eq!(element.as_str(), "geopotential_height_500hPa");
+        assert_eq!(
+            element.open_meteo_s3_variable(),
+            Some("geopotential_height_500hPa")
+        );
+    }
 
     #[test]
     fn snowfall_maps_to_s3_variable_and_normalizes_to_api_cm() {

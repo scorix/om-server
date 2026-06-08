@@ -19,8 +19,10 @@ pub struct ServerConfig {
     pub sync_interval_secs: u64,
     #[arg(long, default_value_t = 16)]
     pub sync_forecast_days: u32,
-    #[arg(long, value_delimiter = ',', default_value = "ecmwf_ifs025")]
+    #[arg(long, value_delimiter = ',', default_value = "ecmwf_ifs")]
     pub sync_models: Vec<String>,
+    #[arg(long, default_value_t = 4)]
+    pub sync_parallelism: usize,
 }
 
 impl ServerConfig {

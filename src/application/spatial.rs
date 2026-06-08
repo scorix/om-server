@@ -10,7 +10,7 @@ use crate::domain::{
 use crate::error::{DatasetError, SpatialServiceError};
 use crate::r#gen::{
     GetSpatialMetaRequest, GetSpatialMetaResponse, GetSpatialPointSeriesRequest,
-    GetSpatialPointSeriesResponse, HealthResponse, ListSourcesResponse, Source,
+    GetSpatialPointSeriesResponse, ListSourcesResponse, Source,
     SpatialElementValue as ProtoSpatialElementValue, SpatialPointSample as ProtoSpatialPointSample,
     VariableMeta as ProtoVariableMeta,
 };
@@ -21,7 +21,6 @@ pub struct SpatialService<F = crate::infrastructure::S3ObjectFetcher, R = Omfile
     fetcher: Arc<F>,
     dataset_reader: Arc<R>,
     active_catalog: Arc<ActiveSpatialCatalog>,
-    ready_models: Vec<WeatherModelId>,
 }
 
 impl<F, R> SpatialService<F, R>
@@ -34,21 +33,12 @@ where
         fetcher: F,
         dataset_reader: R,
         active_catalog: Arc<ActiveSpatialCatalog>,
-        ready_models: Vec<WeatherModelId>,
     ) -> Self {
         Self {
             registry,
             fetcher: Arc::new(fetcher),
             dataset_reader: Arc::new(dataset_reader),
             active_catalog,
-            ready_models,
-        }
-    }
-
-    pub fn health(&self) -> HealthResponse {
-        HealthResponse {
-            ok: self.active_catalog.is_ready(&self.ready_models),
-            service: "om-server".to_string(),
         }
     }
 
@@ -215,24 +205,31 @@ impl SpatialPointReader {
         latitude: f64,
         longitude: f64,
     ) -> Result<Vec<ProtoSpatialElementValue>, DatasetError> {
-        let mut values = Vec::new();
+        let mut elements = Vec::new();
+        let mut variable_names = Vec::new();
         for &element in source.supported_elements(DataLayout::Spatial) {
             let Some(variable) = source.variable_name(DataLayout::Spatial, element) else {
                 continue;
             };
-            match OmfilesDatasetReader::read_spatial_point_from_local(
-                local_path, variable, latitude, longitude,
-            ) {
-                Ok(value) => values.push(ProtoSpatialElementValue {
-                    element: element.as_str().to_string(),
-                    // Snowfall: mm water equivalent on S3 → cm via WeatherElement::SNOWFALL_CM_PER_WATER_EQUIVALENT_MM (7/10).
-                    value: element.normalize_spatial_value(value),
-                }),
-                // Open-Meteo omits accumulation variables (e.g. precipitation) on the first
-                // valid time of each spatial run; later timesteps include them.
-                Err(DatasetError::VariableNotFound { .. }) => {}
-                Err(error) => return Err(error),
-            }
+            elements.push(element);
+            variable_names.push(variable);
+        }
+        let raw_values = OmfilesDatasetReader::read_spatial_points_from_local(
+            local_path,
+            &variable_names,
+            latitude,
+            longitude,
+        )?;
+        let mut values = Vec::new();
+        for (element, value) in elements.into_iter().zip(raw_values) {
+            let Some(value) = value else {
+                continue;
+            };
+            values.push(ProtoSpatialElementValue {
+                element: element.as_str().to_string(),
+                // Snowfall: mm water equivalent on S3 → cm via WeatherElement::SNOWFALL_CM_PER_WATER_EQUIVALENT_MM (7/10).
+                value: element.normalize_spatial_value(value),
+            });
         }
         append_derived_wind_speed(&mut values);
         Ok(values)

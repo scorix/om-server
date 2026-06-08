@@ -1,27 +1,13 @@
 use crate::domain::{DataLayout, ObjectKey, WeatherDataSource, WeatherElement, WeatherModelId};
 use crate::error::DataSourceError;
 
+#[path = "dwd_icon_catalog.rs"]
+mod dwd_icon_catalog;
+
+use dwd_icon_catalog::{DWD_SPATIAL_ELEMENTS, DWD_TIMESERIES_ELEMENTS};
+
 #[derive(Debug, Default)]
 pub struct DwdIconSource;
-
-const SPATIAL_ELEMENTS: &[WeatherElement] = &[
-    WeatherElement::Temperature2m,
-    WeatherElement::RelativeHumidity2m,
-    WeatherElement::Precipitation,
-    WeatherElement::Rain,
-    WeatherElement::Snowfall,
-    WeatherElement::SnowDepth,
-    WeatherElement::FreezingLevelHeight,
-    WeatherElement::WeatherCode,
-    WeatherElement::WindGusts10m,
-    WeatherElement::CloudCover,
-    WeatherElement::CloudCoverLow,
-    WeatherElement::CloudCoverMid,
-    WeatherElement::CloudCoverHigh,
-    WeatherElement::Cape,
-];
-
-const TIMESERIES_ELEMENTS: &[WeatherElement] = SPATIAL_ELEMENTS;
 
 impl WeatherDataSource for DwdIconSource {
     fn model_id(&self) -> WeatherModelId {
@@ -29,13 +15,13 @@ impl WeatherDataSource for DwdIconSource {
     }
 
     fn supported_layouts(&self) -> &'static [DataLayout] {
-        &[DataLayout::Spatial, DataLayout::Timeseries, DataLayout::Run]
+        &[DataLayout::Spatial, DataLayout::Timeseries]
     }
 
     fn supported_elements(&self, layout: DataLayout) -> &'static [WeatherElement] {
         match layout {
-            DataLayout::Spatial => SPATIAL_ELEMENTS,
-            DataLayout::Timeseries | DataLayout::Run => TIMESERIES_ELEMENTS,
+            DataLayout::Spatial => DWD_SPATIAL_ELEMENTS,
+            DataLayout::Timeseries => DWD_TIMESERIES_ELEMENTS,
         }
     }
 
@@ -60,10 +46,6 @@ impl WeatherDataSource for DwdIconSource {
         chunk: &str,
     ) -> Result<ObjectKey, DataSourceError> {
         Ok(super::OpenMeteoTimeseriesLayout::DWD_ICON.object_key(variable, chunk))
-    }
-
-    fn run_object_key(&self, run_prefix: &str, variable: &str) -> ObjectKey {
-        super::OpenMeteoRunLayout::DWD_ICON.object_key_in_prefix(run_prefix, variable)
     }
 }
 
@@ -91,5 +73,31 @@ mod tests {
             source.variable_name(DataLayout::Spatial, WeatherElement::WeatherCode),
             Some("weather_code")
         );
+    }
+
+    #[test]
+    fn dwd_icon_spatial_catalog_lists_all_manifest_variables() {
+        let source = DwdIconSource;
+        let elements = source
+            .supported_elements(DataLayout::Spatial)
+            .iter()
+            .map(|element| element.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(elements.len(), 123);
+        assert!(elements.contains(&"temperature_2m".to_string()));
+        assert!(elements.contains(&"snowfall".to_string()));
+        assert!(elements.contains(&"weather_code".to_string()));
+    }
+
+    #[test]
+    fn dwd_icon_timeseries_catalog_lists_all_manifest_variables() {
+        let source = DwdIconSource;
+        let elements = source
+            .supported_elements(DataLayout::Timeseries)
+            .iter()
+            .map(|element| element.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(elements.len(), 134);
+        assert!(elements.contains(&"static".to_string()));
     }
 }

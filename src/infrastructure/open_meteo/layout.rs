@@ -11,11 +11,6 @@ pub struct OpenMeteoTimeseriesLayout {
     model_path: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpenMeteoRunLayout {
-    model_path: &'static str,
-}
-
 macro_rules! model_layouts {
     ($name:ident) => {
         impl $name {
@@ -40,7 +35,6 @@ macro_rules! model_layouts {
 
 model_layouts!(OpenMeteoSpatialLayout);
 model_layouts!(OpenMeteoTimeseriesLayout);
-model_layouts!(OpenMeteoRunLayout);
 
 impl OpenMeteoSpatialLayout {
     pub fn object_key(self, run_ref: &str, timestamp: &str) -> Result<ObjectKey, DataSourceError> {
@@ -55,30 +49,6 @@ impl OpenMeteoSpatialLayout {
 impl OpenMeteoTimeseriesLayout {
     pub fn object_key(self, variable: &str, chunk: &str) -> ObjectKey {
         ObjectKey(format!("data/{}/{variable}/{chunk}.om", self.model_path))
-    }
-}
-
-impl OpenMeteoRunLayout {
-    pub fn run_prefix(self, year: i32, month: u32, day: u32, run_ref: &str) -> String {
-        format!(
-            "data_run/{}/{year:04}/{month:02}/{day:02}/{run_ref}/",
-            self.model_path
-        )
-    }
-
-    pub fn object_key_in_prefix(self, run_prefix: &str, variable: &str) -> ObjectKey {
-        ObjectKey(format!("{run_prefix}{variable}.om"))
-    }
-
-    pub fn object_key(
-        self,
-        year: i32,
-        month: u32,
-        day: u32,
-        run_ref: &str,
-        variable: &str,
-    ) -> ObjectKey {
-        self.object_key_in_prefix(&self.run_prefix(year, month, day, run_ref), variable)
     }
 }
 

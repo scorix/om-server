@@ -34,7 +34,7 @@ impl WeatherDataSource for TwoElementSource {
     fn supported_elements(&self, layout: DataLayout) -> &'static [WeatherElement] {
         match layout {
             DataLayout::Spatial => &[WeatherElement::Temperature2m, WeatherElement::Precipitation],
-            DataLayout::Timeseries | DataLayout::Run => &[],
+            DataLayout::Timeseries => &[],
         }
     }
 
@@ -61,10 +61,6 @@ impl WeatherDataSource for TwoElementSource {
     ) -> Result<ObjectKey, DataSourceError> {
         unimplemented!()
     }
-
-    fn run_object_key(&self, _run_prefix: &str, _variable: &str) -> ObjectKey {
-        unimplemented!()
-    }
 }
 
 impl WeatherDataSource for SingleElementSource {
@@ -79,7 +75,7 @@ impl WeatherDataSource for SingleElementSource {
     fn supported_elements(&self, layout: DataLayout) -> &'static [WeatherElement] {
         match layout {
             DataLayout::Spatial => &[WeatherElement::Temperature2m],
-            DataLayout::Timeseries | DataLayout::Run => &[],
+            DataLayout::Timeseries => &[],
         }
     }
 
@@ -103,10 +99,6 @@ impl WeatherDataSource for SingleElementSource {
         _variable: &str,
         _chunk: &str,
     ) -> Result<ObjectKey, DataSourceError> {
-        unimplemented!()
-    }
-
-    fn run_object_key(&self, _run_prefix: &str, _variable: &str) -> ObjectKey {
         unimplemented!()
     }
 }
@@ -203,7 +195,6 @@ fn spatial_service_returns_synced_metadata() {
         fetcher,
         OmfilesDatasetReader,
         catalog,
-        vec![WeatherModelId::EcmwfIfs025],
     );
     let response = service
         .get_spatial_meta(GetSpatialMetaRequest {
@@ -252,30 +243,53 @@ fn read_supported_spatial_point_reads_every_listed_element() {
 }
 
 #[test]
-fn ecmwf_spatial_catalog_lists_all_spatial_elements() {
+fn ecmwf_ifs_spatial_catalog_lists_all_spatial_elements() {
+    let registry = open_meteo::OpenMeteoSources.registry();
+    let source = registry
+        .get(WeatherModelId::EcmwfIfs)
+        .expect("ecmwf_ifs source");
+    let elements = SpatialPointReader::element_names(source);
+    assert_eq!(elements.len(), 35);
+    assert!(elements.contains(&"visibility".to_string()));
+    assert!(elements.contains(&"dew_point_2m".to_string()));
+}
+
+#[test]
+fn ecmwf_ifs025_spatial_catalog_lists_all_spatial_elements() {
     let registry = open_meteo::OpenMeteoSources.registry();
     let source = registry
         .get(WeatherModelId::EcmwfIfs025)
-        .expect("ecmwf source");
+        .expect("ecmwf_ifs025 source");
     let elements = SpatialPointReader::element_names(source);
-    assert_eq!(
-        elements,
-        vec![
-            "temperature_2m",
-            "relative_humidity_2m",
-            "precipitation",
-            "snowfall",
-            "snow_depth",
-            "cloud_cover",
-            "cloud_cover_low",
-            "cloud_cover_mid",
-            "cloud_cover_high",
-            "wind_u_component_10m",
-            "wind_v_component_10m",
-            "wind_gusts_10m",
-            "surface_temperature",
-            "shortwave_radiation",
-            "cape",
-        ]
-    );
+    assert_eq!(elements.len(), 119);
+    assert!(elements.contains(&"temperature_2m".to_string()));
+    assert!(elements.contains(&"relative_humidity_2m".to_string()));
+    assert!(elements.contains(&"geopotential_height_850hPa".to_string()));
+    assert!(elements.contains(&"snowfall".to_string()));
+}
+
+#[test]
+fn dwd_icon_spatial_catalog_lists_all_spatial_elements() {
+    let registry = open_meteo::OpenMeteoSources.registry();
+    let source = registry
+        .get(WeatherModelId::DwdIcon)
+        .expect("dwd_icon source");
+    let elements = SpatialPointReader::element_names(source);
+    assert_eq!(elements.len(), 123);
+    assert!(elements.contains(&"temperature_2m".to_string()));
+    assert!(elements.contains(&"weather_code".to_string()));
+    assert!(elements.contains(&"snowfall".to_string()));
+}
+
+#[test]
+fn gfs025_spatial_catalog_lists_all_spatial_elements() {
+    let registry = open_meteo::OpenMeteoSources.registry();
+    let source = registry
+        .get(WeatherModelId::Gfs025)
+        .expect("ncep_gfs025 source");
+    let elements = SpatialPointReader::element_names(source);
+    assert_eq!(elements.len(), 316);
+    assert!(elements.contains(&"visibility".to_string()));
+    assert!(elements.contains(&"lifted_index".to_string()));
+    assert!(elements.contains(&"cloud_cover_500hPa".to_string()));
 }

@@ -3,18 +3,10 @@ syntax = "proto3";
 package om.v1;
 
 service OmSpatialService {
-  rpc Health(HealthRequest) returns (HealthResponse);
   rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
   rpc GetSpatialMeta(GetSpatialMetaRequest) returns (GetSpatialMetaResponse);
   rpc GetSpatialPointSeries(GetSpatialPointSeriesRequest)
       returns (GetSpatialPointSeriesResponse);
-}
-
-message HealthRequest {}
-
-message HealthResponse {
-  bool ok = 1;
-  string service = 2;
 }
 
 message ListSourcesRequest {}

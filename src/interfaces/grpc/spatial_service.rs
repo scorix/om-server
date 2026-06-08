@@ -17,13 +17,6 @@ impl GrpcSpatialService {
 
 #[tonic::async_trait]
 impl OmSpatialServiceRpc for GrpcSpatialService {
-    async fn health(
-        &self,
-        _request: Request<crate::r#gen::HealthRequest>,
-    ) -> Result<Response<crate::r#gen::HealthResponse>, Status> {
-        Ok(Response::new(self.inner.health()))
-    }
-
     async fn list_sources(
         &self,
         _request: Request<crate::r#gen::ListSourcesRequest>,

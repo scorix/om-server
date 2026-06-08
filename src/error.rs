@@ -33,6 +33,15 @@ pub enum GridError {
 
     #[error("expected 1x1 point window, got {count} values")]
     InvalidPointWindow { count: usize },
+
+    #[error("gaussian grid point count mismatch: expected {expected}, got {actual}")]
+    GaussianPointCountMismatch { expected: u64, actual: u64 },
+
+    #[error("unsupported gaussian grid with {point_count} points")]
+    UnsupportedGaussianGrid { point_count: u64 },
+
+    #[error("gaussian grid point {gridpoint} out of range [0, {max})")]
+    GaussianGridPointOutOfRange { gridpoint: u64, max: u64 },
 }
 
 #[derive(Debug, thiserror::Error)]

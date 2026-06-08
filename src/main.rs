@@ -46,6 +46,7 @@ async fn main() -> Result<(), MainError> {
             models: sync_models.clone(),
             forecast_days: config.sync_forecast_days as usize,
             interval: config.sync_interval(),
+            parallelism: config.sync_parallelism,
         },
     );
     tokio::spawn(worker.run_forever());
@@ -55,7 +56,6 @@ async fn main() -> Result<(), MainError> {
         fetcher,
         OmfilesDatasetReader,
         catalog,
-        sync_models,
     ));
     let grpc = GrpcSpatialService::new(service);
     let addr = config
@@ -72,11 +72,13 @@ async fn main() -> Result<(), MainError> {
         sync_models = ?config.sync_models,
         "om-server listening"
     );
+    let (_health_reporter, health_service) = tonic_health::server::health_reporter();
     let reflection = tonic_reflection::server::Builder::configure()
         .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)
         .build_v1()
         .map_err(|source| MainError::Reflection { source })?;
     Server::builder()
+        .add_service(health_service)
         .add_service(reflection)
         .add_service(OmSpatialServiceServer::new(grpc))
         .serve(addr)

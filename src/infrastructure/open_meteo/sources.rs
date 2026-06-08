@@ -12,6 +12,7 @@ impl OpenMeteoSources {
 
     pub fn adapters(self) -> Vec<Box<dyn WeatherDataSource>> {
         vec![
+            Box::new(ecmwf::EcmwfIfsSource),
             Box::new(ecmwf::EcmwfIfs025Source),
             Box::new(gfs::Gfs025Source),
             Box::new(dwd::DwdIconSource),
