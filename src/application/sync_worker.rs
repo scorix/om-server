@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use tokio::sync::Notify;
+
 use crate::application::active_catalog::ActiveSpatialCatalog;
 use crate::domain::{
     ObjectFetcher, SourceRegistry, SpatialObjectLocal, SpatialRun, SpatialRunCatalog,
@@ -18,6 +20,7 @@ pub struct SpatialSyncWorkerConfig {
     pub forecast_days: usize,
     pub interval: Duration,
     pub parallelism: usize,
+    pub bake_wake: Option<Arc<Notify>>,
 }
 
 pub struct SpatialSyncWorker<F> {
@@ -30,6 +33,7 @@ pub struct SpatialSyncWorker<F> {
     forecast_days: usize,
     interval: Duration,
     parallelism: usize,
+    bake_wake: Option<Arc<Notify>>,
 }
 
 impl<F> SpatialSyncWorker<F>
@@ -52,6 +56,7 @@ where
             forecast_days: config.forecast_days,
             interval: config.interval,
             parallelism: config.parallelism.max(1),
+            bake_wake: config.bake_wake,
         }
     }
 
@@ -86,6 +91,7 @@ where
             forecast_days: self.forecast_days,
             interval: self.interval,
             parallelism: self.parallelism,
+            bake_wake: self.bake_wake.clone(),
         }
     }
 
@@ -123,6 +129,7 @@ where
                 "spatial run up to date"
             );
             self.catalog.mark_verified(model);
+            self.signal_bake_wake(model, &run.run_ref);
             return Ok(());
         }
 
@@ -147,7 +154,20 @@ where
             "published active spatial run"
         );
         self.catalog.mark_verified(model);
+        self.signal_bake_wake(model, &run.run_ref);
         Ok(())
+    }
+
+    fn signal_bake_wake(&self, model: WeatherModelId, run_ref: &str) {
+        let Some(wake) = &self.bake_wake else {
+            return;
+        };
+        tracing::info!(
+            model = %model,
+            run_ref,
+            "signaling weather bake worker"
+        );
+        wake.notify_waiters();
     }
 
     fn build_snapshot(

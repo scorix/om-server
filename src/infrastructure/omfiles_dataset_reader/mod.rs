@@ -2,6 +2,8 @@ mod spatial_file;
 mod spatial_sampler;
 mod variable_index;
 
+pub use spatial_file::open_local;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -11,7 +13,7 @@ use omfiles::traits::OmFileReaderBackend;
 use crate::domain::{DatasetLocation, DatasetMeta, DatasetReader, SpatialGrid};
 use crate::error::DatasetError;
 
-use spatial_file::{OmSpatialFile, OmSpatialFileSessionWithIndex, open_local, spatial_grid};
+use spatial_file::{OmSpatialFile, OmSpatialFileSessionWithIndex, spatial_grid};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OmfilesDatasetReader;

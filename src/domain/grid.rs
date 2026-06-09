@@ -425,6 +425,59 @@ impl SpatialGrid {
         }
     }
 
+    pub fn sample_field_value(
+        &self,
+        values: &[f32],
+        latitude: f64,
+        longitude: f64,
+    ) -> Result<f64, GridError> {
+        let window = self.interpolation_window(latitude, longitude)?;
+        if window.sample_indices.len() == 4 {
+            let scattered: Vec<f32> = window
+                .sample_indices
+                .iter()
+                .map(|&index| {
+                    values.get(index as usize).copied().ok_or(
+                        GridError::GaussianGridPointOutOfRange {
+                            gridpoint: index,
+                            max: values.len() as u64,
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return window.interpolate(&scattered);
+        }
+
+        let lon_stride = match &self.backend {
+            GridBackend::Regular {
+                dimensions,
+                lon_axis,
+                ..
+            } => dimensions[*lon_axis],
+            GridBackend::Gaussian(_) => {
+                return Err(GridError::InvalidInterpolationWindow {
+                    count: values.len(),
+                });
+            }
+        };
+
+        let mut samples = Vec::with_capacity(4);
+        let lat_range = &window.ranges[window.lat_axis];
+        let lon_range = &window.ranges[window.lon_axis];
+        for lat_index in lat_range.start..lat_range.end {
+            for lon_index in lon_range.start..lon_range.end {
+                let flat_index = lat_index * lon_stride + lon_index;
+                let value = values.get(flat_index as usize).copied().ok_or(
+                    GridError::InvalidInterpolationWindow {
+                        count: values.len(),
+                    },
+                )?;
+                samples.push(value);
+            }
+        }
+        window.interpolate(&samples)
+    }
+
     pub fn label(&self) -> &'static str {
         match &self.backend {
             GridBackend::Gaussian(_) => "coordinates=gaussian,crs_wkt_reduced",

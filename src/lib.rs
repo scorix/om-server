@@ -12,6 +12,6 @@ pub use domain::model::WeatherModelId;
 pub use error::{
     ActiveCatalogError, DataSourceError, DatasetError, GridError, HttpError, MainError,
     ModelParseError, OpenMeteoError, SpatialServiceError, SyncError, SyncWorkerError,
-    TileRenderError, TimestampParseError,
+    TileRenderError, TimestampParseError, WeatherBakeError,
 };
 pub use infrastructure::config::ServerConfig;

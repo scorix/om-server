@@ -96,6 +96,63 @@ pub enum TimestampParseError {
 pub enum TileRenderError {
     #[error("weather tile rendering is not implemented")]
     NotImplemented,
+
+    #[error("encode weather tile PNG")]
+    EncodePng {
+        #[source]
+        source: image::ImageError,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WeatherBakeError {
+    #[error("tile cache directory is required for weather bake")]
+    MissingCacheDir,
+
+    #[error(transparent)]
+    ActiveCatalog(#[from] ActiveCatalogError),
+
+    #[error(transparent)]
+    Dataset(#[from] DatasetError),
+
+    #[error(transparent)]
+    TileRender(#[from] TileRenderError),
+
+    #[error("open sqlite {path}")]
+    SqliteOpen {
+        path: PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    #[error("query sqlite terrain coverage")]
+    SqliteQuery {
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    #[error("read file {path}")]
+    ReadFile {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("write file {path}")]
+    WriteFile {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("serialize weather manifest")]
+    Serialize {
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error("write PMTiles {path}: {message}")]
+    PmtilesWrite { path: PathBuf, message: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -427,4 +484,7 @@ pub enum MainError {
 
     #[error(transparent)]
     Serve(#[from] tonic::transport::Error),
+
+    #[error(transparent)]
+    WeatherBake(#[from] WeatherBakeError),
 }
