@@ -1,7 +1,5 @@
 use std::str::FromStr;
 
-use crate::domain::WeatherModelId;
-
 /// Raster weather tile layers baked from spatial `.om` files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WeatherBakeLayer {
@@ -10,6 +8,20 @@ pub enum WeatherBakeLayer {
     Snowfall,
     Wind,
     SnowDepth,
+    Visibility,
+    ShortwaveRadiation,
+}
+
+/// Physical value range a scalar layer is quantized into when baking grayscale tiles.
+///
+/// The same `[min, max]` must be mirrored by the clients' colormaps (web `raster-color`
+/// range and the iOS Metal colormap LUT) so encoded grays decode to the same value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeatherValueRange {
+    pub min: f32,
+    pub max: f32,
+    /// Values at or below this are rendered transparent (e.g. snowfall/snow depth ≤ 0).
+    pub transparent_at_or_below: Option<f32>,
 }
 
 impl WeatherBakeLayer {
@@ -20,6 +32,8 @@ impl WeatherBakeLayer {
             Self::Snowfall => "snowfall",
             Self::Wind => "wind",
             Self::SnowDepth => "snow_depth",
+            Self::Visibility => "visibility",
+            Self::ShortwaveRadiation => "shortwave_radiation",
         }
     }
 
@@ -30,6 +44,8 @@ impl WeatherBakeLayer {
             "snowfall" | "snowfall_water_equivalent" => Some(Self::Snowfall),
             "wind" | "wind_particles" => Some(Self::Wind),
             "snow_depth" => Some(Self::SnowDepth),
+            "visibility" => Some(Self::Visibility),
+            "shortwave_radiation" => Some(Self::ShortwaveRadiation),
             _ => None,
         }
     }
@@ -41,6 +57,8 @@ impl WeatherBakeLayer {
             Self::CloudCover => Some("cloud_cover"),
             Self::Snowfall => Some("snowfall_water_equivalent"),
             Self::SnowDepth => Some("snow_depth"),
+            Self::Visibility => Some("visibility"),
+            Self::ShortwaveRadiation => Some("shortwave_radiation"),
             Self::Wind => None,
         }
     }
@@ -52,17 +70,24 @@ impl WeatherBakeLayer {
         }
     }
 
-    pub fn available_for_model(model: WeatherModelId) -> Vec<Self> {
-        let mut layers = vec![
-            Self::Temperature2m,
-            Self::CloudCover,
-            Self::Snowfall,
-            Self::Wind,
-        ];
-        if matches!(model, WeatherModelId::EcmwfIfs025 | WeatherModelId::DwdIcon) {
-            layers.push(Self::SnowDepth);
+    /// Value range used to quantize scalar values into grayscale tiles (`None` for wind,
+    /// which uses its own U/V particle encoding).
+    pub fn value_range(self) -> Option<WeatherValueRange> {
+        let range = |min, max, transparent_at_or_below| WeatherValueRange {
+            min,
+            max,
+            transparent_at_or_below,
+        };
+        match self {
+            Self::Temperature2m => Some(range(-30.0, 40.0, None)),
+            Self::CloudCover => Some(range(0.0, 100.0, None)),
+            Self::Snowfall => Some(range(0.0, 20.0, Some(0.0))),
+            Self::SnowDepth => Some(range(0.0, 3.0, Some(0.0))),
+            // ECMWF visibility is in meters (0–24 km clamped).
+            Self::Visibility => Some(range(0.0, 24_000.0, None)),
+            Self::ShortwaveRadiation => Some(range(0.0, 1_000.0, None)),
+            Self::Wind => None,
         }
-        layers
     }
 }
 
@@ -77,7 +102,6 @@ impl FromStr for WeatherBakeLayer {
 #[cfg(test)]
 mod tests {
     use super::WeatherBakeLayer;
-    use crate::domain::WeatherModelId;
 
     #[test]
     fn snowfall_accepts_api_and_s3_aliases() {
@@ -89,18 +113,5 @@ mod tests {
             WeatherBakeLayer::from_id("snowfall_water_equivalent"),
             Some(WeatherBakeLayer::Snowfall)
         );
-    }
-
-    #[test]
-    fn ecmwf_ifs_excludes_snow_depth() {
-        let layers = WeatherBakeLayer::available_for_model(WeatherModelId::EcmwfIfs);
-        assert!(!layers.contains(&WeatherBakeLayer::SnowDepth));
-        assert!(layers.contains(&WeatherBakeLayer::CloudCover));
-    }
-
-    #[test]
-    fn ifs025_includes_snow_depth() {
-        let layers = WeatherBakeLayer::available_for_model(WeatherModelId::EcmwfIfs025);
-        assert!(layers.contains(&WeatherBakeLayer::SnowDepth));
     }
 }

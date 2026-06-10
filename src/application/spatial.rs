@@ -3,24 +3,29 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::application::active_catalog::ActiveSpatialCatalog;
+use crate::application::blended_point_series;
 use crate::domain::{
     DataLayout, DatasetLocation, DatasetReader, ObjectFetcher, ObjectKey, SourceRegistry,
     WeatherDataSource, WeatherElement, WeatherModelId,
 };
 use crate::error::{DatasetError, SpatialServiceError};
 use crate::r#gen::{
-    GetSpatialMetaRequest, GetSpatialMetaResponse, GetSpatialPointSeriesRequest,
-    GetSpatialPointSeriesResponse, ListSourcesResponse, Source,
+    GetBlendedPointSeriesRequest, GetSpatialMetaRequest, GetSpatialMetaResponse,
+    GetSpatialPointSeriesRequest, GetSpatialPointSeriesResponse, GetWeatherPmtilesManifestRequest,
+    GetWeatherPmtilesManifestResponse, ListSourcesResponse, Source,
     SpatialElementValue as ProtoSpatialElementValue, SpatialPointSample as ProtoSpatialPointSample,
     VariableMeta as ProtoVariableMeta,
 };
 use crate::infrastructure::OmfilesDatasetReader;
+use crate::infrastructure::weather_bake_profile::WeatherBakeProfile;
 
 pub struct SpatialService<F = crate::infrastructure::S3ObjectFetcher, R = OmfilesDatasetReader> {
     registry: SourceRegistry,
     fetcher: Arc<F>,
     dataset_reader: Arc<R>,
     active_catalog: Arc<ActiveSpatialCatalog>,
+    blend_profile: WeatherBakeProfile,
+    weather_manifest_dir: PathBuf,
 }
 
 impl<F, R> SpatialService<F, R>
@@ -33,12 +38,16 @@ where
         fetcher: F,
         dataset_reader: R,
         active_catalog: Arc<ActiveSpatialCatalog>,
+        blend_profile: WeatherBakeProfile,
+        weather_manifest_dir: PathBuf,
     ) -> Self {
         Self {
             registry,
             fetcher: Arc::new(fetcher),
             dataset_reader: Arc::new(dataset_reader),
             active_catalog,
+            blend_profile,
+            weather_manifest_dir,
         }
     }
 
@@ -122,6 +131,43 @@ where
         })
     }
 
+    pub fn get_blended_point_series(
+        &self,
+        request: GetBlendedPointSeriesRequest,
+    ) -> Result<GetSpatialPointSeriesResponse, SpatialServiceError> {
+        blended_point_series::get_blended_point_series(
+            &self.registry,
+            self.active_catalog.as_ref(),
+            &self.blend_profile,
+            request,
+        )
+    }
+
+    pub fn get_weather_pmtiles_manifest(
+        &self,
+        request: GetWeatherPmtilesManifestRequest,
+    ) -> Result<GetWeatherPmtilesManifestResponse, SpatialServiceError> {
+        let variable = request.variable.trim();
+        if variable.is_empty() || !is_supported_weather_tile_variable(variable) {
+            return Err(SpatialServiceError::UnknownWeatherVariable {
+                variable: request.variable,
+            });
+        }
+        let path = self
+            .weather_manifest_dir
+            .join(format!("weather_pmtiles_{variable}_manifest.json"));
+        if !path.is_file() {
+            return Err(SpatialServiceError::WeatherManifestNotFound { path });
+        }
+        let manifest_json = std::fs::read_to_string(&path).map_err(|source| {
+            SpatialServiceError::ReadWeatherManifest {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        Ok(GetWeatherPmtilesManifestResponse { manifest_json })
+    }
+
     pub fn fetcher(&self) -> Arc<F> {
         self.fetcher.clone()
     }
@@ -180,6 +226,20 @@ where
     }
 }
 
+const WEATHER_TILE_VARIABLES: &[&str] = &[
+    "temperature_2m",
+    "cloud_cover",
+    "snowfall",
+    "wind",
+    "snow_depth",
+    "visibility",
+    "shortwave_radiation",
+];
+
+fn is_supported_weather_tile_variable(variable: &str) -> bool {
+    WEATHER_TILE_VARIABLES.contains(&variable)
+}
+
 fn parse_model(model: &str) -> Result<WeatherModelId, SpatialServiceError> {
     WeatherModelId::from_str(model).map_err(|source| SpatialServiceError::UnsupportedModel {
         model: model.to_string(),
@@ -229,14 +289,56 @@ impl SpatialPointReader {
                 element: element.as_str().to_string(),
                 // Snowfall: mm water equivalent on S3 → cm via WeatherElement::SNOWFALL_CM_PER_WATER_EQUIVALENT_MM (7/10).
                 value: element.normalize_spatial_value(value),
+                model: String::new(),
             });
         }
         append_derived_wind_speed(&mut values);
         Ok(values)
     }
+
+    pub fn read_elements_at(
+        source: &dyn WeatherDataSource,
+        local_path: &Path,
+        latitude: f64,
+        longitude: f64,
+        elements: &[WeatherElement],
+        model: Option<&str>,
+    ) -> Result<Vec<ProtoSpatialElementValue>, DatasetError> {
+        let mut variable_names = Vec::new();
+        let mut resolved_elements = Vec::new();
+        for &element in elements {
+            let Some(variable) = source.variable_name(DataLayout::Spatial, element) else {
+                continue;
+            };
+            resolved_elements.push(element);
+            variable_names.push(variable);
+        }
+        if variable_names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let raw_values = OmfilesDatasetReader::read_spatial_points_from_local(
+            local_path,
+            &variable_names,
+            latitude,
+            longitude,
+        )?;
+        let model_label = model.unwrap_or_default().to_string();
+        let mut values = Vec::new();
+        for (element, value) in resolved_elements.into_iter().zip(raw_values) {
+            let Some(value) = value else {
+                continue;
+            };
+            values.push(ProtoSpatialElementValue {
+                element: element.as_str().to_string(),
+                value: element.normalize_spatial_value(value),
+                model: model_label.clone(),
+            });
+        }
+        Ok(values)
+    }
 }
 
-fn append_derived_wind_speed(values: &mut Vec<ProtoSpatialElementValue>) {
+pub(crate) fn append_derived_wind_speed(values: &mut Vec<ProtoSpatialElementValue>) {
     if values
         .iter()
         .any(|value| value.element == WeatherElement::WindSpeed10m.as_str())
@@ -257,6 +359,7 @@ fn append_derived_wind_speed(values: &mut Vec<ProtoSpatialElementValue>) {
     values.push(ProtoSpatialElementValue {
         element: WeatherElement::WindSpeed10m.as_str().to_string(),
         value: wind_speed_kmh_from_components(u, v),
+        model: String::new(),
     });
 }
 

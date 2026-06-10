@@ -33,6 +33,20 @@ pub mod om_spatial_service_server {
             tonic::Response<super::GetSpatialPointSeriesResponse>,
             tonic::Status,
         >;
+        async fn get_blended_point_series(
+            &self,
+            request: tonic::Request<super::GetBlendedPointSeriesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSpatialPointSeriesResponse>,
+            tonic::Status,
+        >;
+        async fn get_weather_pmtiles_manifest(
+            &self,
+            request: tonic::Request<super::GetWeatherPmtilesManifestRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetWeatherPmtilesManifestResponse>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct OmSpatialServiceServer<T> {
@@ -235,6 +249,107 @@ pub mod om_spatial_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetSpatialPointSeriesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/om.v1.OmSpatialService/GetBlendedPointSeries" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetBlendedPointSeriesSvc<T: OmSpatialService>(pub Arc<T>);
+                    impl<
+                        T: OmSpatialService,
+                    > tonic::server::UnaryService<super::GetBlendedPointSeriesRequest>
+                    for GetBlendedPointSeriesSvc<T> {
+                        type Response = super::GetSpatialPointSeriesResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetBlendedPointSeriesRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as OmSpatialService>::get_blended_point_series(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetBlendedPointSeriesSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/om.v1.OmSpatialService/GetWeatherPmtilesManifest" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetWeatherPmtilesManifestSvc<T: OmSpatialService>(pub Arc<T>);
+                    impl<
+                        T: OmSpatialService,
+                    > tonic::server::UnaryService<
+                        super::GetWeatherPmtilesManifestRequest,
+                    > for GetWeatherPmtilesManifestSvc<T> {
+                        type Response = super::GetWeatherPmtilesManifestResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::GetWeatherPmtilesManifestRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as OmSpatialService>::get_weather_pmtiles_manifest(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetWeatherPmtilesManifestSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

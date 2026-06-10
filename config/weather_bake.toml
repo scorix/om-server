@@ -1,0 +1,35 @@
+# Weather tile bake profile for om-server.
+#
+# Each [[layers]] entry selects a map tile variable to bake and the spatial model
+# catalog it is read from. Every layer must declare `model` explicitly.
+#
+# Encoding ranges and spatial field names stay in code (`WeatherBakeLayer`); clients
+# mirror the ranges in their colormap specs. See docs/data/variables/CATALOG.md.
+
+[[layers]]
+variable = "temperature_2m"
+model = "ecmwf_ifs"
+
+[[layers]]
+variable = "cloud_cover"
+model = "ecmwf_ifs"
+
+[[layers]]
+variable = "snowfall"
+model = "ecmwf_ifs"
+
+[[layers]]
+variable = "wind"
+model = "ecmwf_ifs"
+
+[[layers]]
+variable = "snow_depth"
+model = "ecmwf_ifs025"
+
+[[layers]]
+variable = "visibility"
+model = "ecmwf_ifs"
+
+[[layers]]
+variable = "shortwave_radiation"
+model = "ecmwf_ifs"

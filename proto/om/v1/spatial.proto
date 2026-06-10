@@ -7,6 +7,12 @@ service OmSpatialService {
   rpc GetSpatialMeta(GetSpatialMetaRequest) returns (GetSpatialMetaResponse);
   rpc GetSpatialPointSeries(GetSpatialPointSeriesRequest)
       returns (GetSpatialPointSeriesResponse);
+  // Per-element model selection from weather_bake.toml (same profile as map tiles).
+  rpc GetBlendedPointSeries(GetBlendedPointSeriesRequest)
+      returns (GetSpatialPointSeriesResponse);
+  // Published weather PMTiles manifest for a raster variable (e.g. temperature_2m).
+  rpc GetWeatherPmtilesManifest(GetWeatherPmtilesManifestRequest)
+      returns (GetWeatherPmtilesManifestResponse);
 }
 
 message ListSourcesRequest {}
@@ -47,6 +53,12 @@ message GetSpatialPointSeriesRequest {
   uint32 days = 4;
 }
 
+message GetBlendedPointSeriesRequest {
+  double latitude = 1;
+  double longitude = 2;
+  uint32 days = 3;
+}
+
 message GetSpatialPointSeriesResponse {
   string model = 1;
   string run_ref = 2;
@@ -63,4 +75,15 @@ message SpatialPointSample {
 message SpatialElementValue {
   string element = 1;
   double value = 2;
+  // Populated by GetBlendedPointSeries; empty for single-model reads.
+  string model = 3;
+}
+
+message GetWeatherPmtilesManifestRequest {
+  string variable = 1;
+}
+
+message GetWeatherPmtilesManifestResponse {
+  // JSON document matching the weather PMTiles manifest schema.
+  string manifest_json = 1;
 }

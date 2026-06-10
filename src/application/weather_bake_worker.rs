@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use tokio::sync::Notify;
 
 use crate::application::active_catalog::ActiveSpatialCatalog;
 use crate::application::weather_bake::{
-    BakeTickResult, WeatherBakeConfig, WeatherBakeUseCase, load_weather_tile_coords,
+    BakeTickResult, WeatherBakeConfig, WeatherBakeUseCase, weather_tile_coords,
 };
 use crate::error::WeatherBakeError;
 use crate::infrastructure::tile_index::TileCoord;
@@ -19,19 +19,13 @@ pub struct WeatherBakeWorkerConfig {
     pub wake: Option<Arc<Notify>>,
 }
 
-struct CachedTileCoords {
-    sqlite_mtime: SystemTime,
-    complete_only: bool,
-    coords: Arc<Vec<TileCoord>>,
-}
-
 pub struct WeatherBakeWorker {
     bake: WeatherBakeConfig,
     catalog: Arc<ActiveSpatialCatalog>,
     interval: Duration,
     wake: Option<Arc<Notify>>,
     busy: Arc<AtomicBool>,
-    tile_coords: Arc<Mutex<Option<CachedTileCoords>>>,
+    tile_coords: Arc<Mutex<Option<Arc<Vec<TileCoord>>>>>,
 }
 
 impl WeatherBakeWorker {
@@ -49,9 +43,13 @@ impl WeatherBakeWorker {
     pub async fn run_forever(self) {
         tracing::info!(
             interval_secs = self.interval.as_secs(),
-            model = %self.bake.model,
             layer_count = self.bake.plans.len(),
-            layers = ?self.bake.plans.iter().map(|plan| plan.layer.id()).collect::<Vec<_>>(),
+            layers = ?self
+                .bake
+                .plans
+                .iter()
+                .map(|plan| format!("{}:{}", plan.layer.id(), plan.model.as_str()))
+                .collect::<Vec<_>>(),
             "weather bake worker started"
         );
         loop {
@@ -122,39 +120,20 @@ impl WeatherBakeWorker {
     }
 
     fn resolve_tile_coords(&self) -> Result<Arc<Vec<TileCoord>>, WeatherBakeError> {
-        let sqlite_mtime = std::fs::metadata(&self.bake.sqlite_path)
-            .map_err(|source| WeatherBakeError::ReadFile {
-                path: self.bake.sqlite_path.clone(),
-                source,
-            })?
-            .modified()
-            .map_err(|source| WeatherBakeError::ReadFile {
-                path: self.bake.sqlite_path.clone(),
-                source,
-            })?;
-
         let mut cached = self
             .tile_coords
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(entry) = cached.as_ref()
-            && entry.sqlite_mtime == sqlite_mtime
-            && entry.complete_only == self.bake.complete_only
-        {
-            return Ok(entry.coords.clone());
+        if let Some(coords) = cached.as_ref() {
+            return Ok(coords.clone());
         }
 
-        let coords = Arc::new(load_weather_tile_coords(&self.bake)?);
+        let coords = Arc::new(weather_tile_coords());
         tracing::info!(
             tile_count = coords.len(),
-            sqlite = %self.bake.sqlite_path.display(),
-            "built weather tile index"
+            "built weather tile index (global-only)"
         );
-        *cached = Some(CachedTileCoords {
-            sqlite_mtime,
-            complete_only: self.bake.complete_only,
-            coords: coords.clone(),
-        });
+        *cached = Some(coords.clone());
         Ok(coords)
     }
 
@@ -166,6 +145,7 @@ impl WeatherBakeWorker {
             }
             BakeTickResult::Progress {
                 variable,
+                model,
                 run_ref,
                 valid_time,
                 completed,
@@ -173,6 +153,7 @@ impl WeatherBakeWorker {
             } => {
                 tracing::info!(
                     variable,
+                    model,
                     run_ref,
                     valid_time,
                     completed,
@@ -181,8 +162,12 @@ impl WeatherBakeWorker {
                 );
                 TickOutcome::Progress
             }
-            BakeTickResult::RunComplete { variable, run_ref } => {
-                tracing::info!(variable, run_ref, "weather bake worker run complete");
+            BakeTickResult::RunComplete { layers, run_ref } => {
+                tracing::info!(
+                    run_ref,
+                    layers = ?layers,
+                    "weather bake worker all layers complete"
+                );
                 TickOutcome::RunComplete
             }
         }

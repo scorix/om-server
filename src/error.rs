@@ -118,19 +118,6 @@ pub enum WeatherBakeError {
     #[error(transparent)]
     TileRender(#[from] TileRenderError),
 
-    #[error("open sqlite {path}")]
-    SqliteOpen {
-        path: PathBuf,
-        #[source]
-        source: rusqlite::Error,
-    },
-
-    #[error("query sqlite terrain coverage")]
-    SqliteQuery {
-        #[source]
-        source: rusqlite::Error,
-    },
-
     #[error("read file {path}")]
     ReadFile {
         path: PathBuf,
@@ -153,6 +140,39 @@ pub enum WeatherBakeError {
 
     #[error("write PMTiles {path}: {message}")]
     PmtilesWrite { path: PathBuf, message: String },
+
+    #[error("read weather bake config {path}")]
+    ReadConfig {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("parse weather bake config {path}")]
+    ParseConfig {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
+
+    #[error("weather bake config {path}: no layers configured")]
+    EmptyLayers { path: PathBuf },
+
+    #[error("weather bake config {path}: unknown variable {variable}")]
+    UnknownVariable { path: PathBuf, variable: String },
+
+    #[error("weather bake config {path}: layer {variable} is missing required `model`")]
+    MissingLayerModel { path: PathBuf, variable: String },
+
+    #[error("weather bake config {path}: duplicate variable {variable}")]
+    DuplicateVariable { path: PathBuf, variable: String },
+
+    #[error("weather bake config {path}: unknown model {model} for variable {variable}")]
+    UnknownModel {
+        path: PathBuf,
+        variable: String,
+        model: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -455,6 +475,22 @@ pub enum SpatialServiceError {
 
     #[error("spatial point series returned no samples")]
     EmptyPointSeries,
+
+    #[error("weather bake profile has no layers")]
+    EmptyBlendProfile,
+
+    #[error("unknown weather tile variable {variable}")]
+    UnknownWeatherVariable { variable: String },
+
+    #[error("weather manifest not found at {path}")]
+    WeatherManifestNotFound { path: PathBuf },
+
+    #[error("read weather manifest at {path}")]
+    ReadWeatherManifest {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]

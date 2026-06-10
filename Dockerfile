@@ -50,6 +50,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /tmp/om-server /usr/local/bin/om-server
+COPY config/weather_bake.toml /config/weather_bake.toml
+
+ENV OM_SERVER_WEATHER_BAKE_CONFIG=/config/weather_bake.toml
 
 EXPOSE 50051
 ENTRYPOINT ["om-server"]

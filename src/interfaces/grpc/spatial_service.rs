@@ -48,4 +48,38 @@ impl OmSpatialServiceRpc for GrpcSpatialService {
                 _ => Status::invalid_argument(format!("{error:#}")),
             })
     }
+
+    async fn get_blended_point_series(
+        &self,
+        request: Request<crate::r#gen::GetBlendedPointSeriesRequest>,
+    ) -> Result<Response<crate::r#gen::GetSpatialPointSeriesResponse>, Status> {
+        self.inner
+            .get_blended_point_series(request.into_inner())
+            .map(Response::new)
+            .map_err(|error| match &error {
+                crate::error::SpatialServiceError::NotReady { .. } => {
+                    Status::unavailable(format!("{error:#}"))
+                }
+                _ => Status::invalid_argument(format!("{error:#}")),
+            })
+    }
+
+    async fn get_weather_pmtiles_manifest(
+        &self,
+        request: Request<crate::r#gen::GetWeatherPmtilesManifestRequest>,
+    ) -> Result<Response<crate::r#gen::GetWeatherPmtilesManifestResponse>, Status> {
+        self.inner
+            .get_weather_pmtiles_manifest(request.into_inner())
+            .map(Response::new)
+            .map_err(|error| match &error {
+                crate::error::SpatialServiceError::UnknownWeatherVariable { .. }
+                | crate::error::SpatialServiceError::WeatherManifestNotFound { .. } => {
+                    Status::not_found(format!("{error:#}"))
+                }
+                crate::error::SpatialServiceError::ReadWeatherManifest { .. } => {
+                    Status::internal(format!("{error:#}"))
+                }
+                _ => Status::invalid_argument(format!("{error:#}")),
+            })
+    }
 }

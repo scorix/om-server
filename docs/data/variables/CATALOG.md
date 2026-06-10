@@ -2,6 +2,31 @@
 
 按 **模型 / 模式** 分组。要素名 = S3 variable 名。
 
+## 地图瓦片图层（baked tile layers）
+
+由 om-server 烘焙为 PNG PMTiles，经 `/api/v1/tiles/weather/{variable}/{z}/{x}/{y}.png` 提供。
+标量要素以**灰度**编码（gray `1..=255` 线性映射到下表 `[min, max]`，gray `0` = 透明/无数据），
+颜色由客户端着色（Web `raster-color`，iOS Metal LUT）。`wind` 使用 U/V 粒子编码。
+
+| variable | 来源模型 | spatial 要素 | 范围 / 单位 | 透明阈值 |
+| --- | --- | --- | --- | --- |
+| `temperature_2m` | `ecmwf_ifs` | `temperature_2m` | −30…40 °C | — |
+| `cloud_cover` | `ecmwf_ifs` | `cloud_cover` | 0…100 % | — |
+| `snowfall` | `ecmwf_ifs` | `snowfall_water_equivalent` | 0…20 mm | ≤ 0 |
+| `wind` | `ecmwf_ifs` | `wind_u/v_component_10m` | 0…64 m/s（粒子） | — |
+| `snow_depth` | `ecmwf_ifs025` | `snow_depth` | 0…3 m | ≤ 0 |
+| `visibility` | `ecmwf_ifs` | `visibility` | 0…24000 m | — |
+| `shortwave_radiation` | `ecmwf_ifs` | `shortwave_radiation` | 0…1000 W/m² | — |
+
+> **烘焙哪些图层、每个图层用哪个模型**：见 `om-server/config/weather_bake.toml`（`OM_SERVER_WEATHER_BAKE_CONFIG` 可覆盖路径）。每个 `[[layers]]` 必须显式声明 `variable` 和 `model`。
+>
+> 范围必须与 `om-server/src/domain/weather_bake_layer.rs`（`value_range`）、Web `weather-colormap.ts`、
+> iOS Metal LUT 三处保持一致，否则灰度会解码成错误数值。
+
+---
+
+按 **模型 / 模式** 分组的完整 S3 要素清单：
+
 
 
 ### ecmwf_ifs025 / run (114)

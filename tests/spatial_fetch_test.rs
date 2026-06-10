@@ -7,12 +7,13 @@ use om_server::application::active_catalog::ActiveSpatialCatalog;
 use om_server::application::spatial::SpatialPointReader;
 use om_server::application::spatial::SpatialService;
 use om_server::domain::{
-    DataLayout, ObjectFetcher, ObjectKey, SpatialObjectLocal, SpatialRunSnapshot,
+    DataLayout, ObjectFetcher, ObjectKey, SpatialObjectLocal, SpatialRunSnapshot, WeatherBakeLayer,
     WeatherDataSource, WeatherElement, WeatherModelId,
 };
 use om_server::error::{DataSourceError, HttpError};
 use om_server::r#gen::GetSpatialMetaRequest;
 use om_server::infrastructure::http::HttpClient;
+use om_server::infrastructure::weather_bake_profile::{WeatherBakeLayerSpec, WeatherBakeProfile};
 use om_server::infrastructure::{
     HttpRangeReader, OmfilesDatasetReader, S3ObjectFetcher, open_meteo,
 };
@@ -195,6 +196,13 @@ fn spatial_service_returns_synced_metadata() {
         fetcher,
         OmfilesDatasetReader,
         catalog,
+        WeatherBakeProfile {
+            layers: vec![WeatherBakeLayerSpec {
+                layer: WeatherBakeLayer::Temperature2m,
+                model: WeatherModelId::EcmwfIfs025,
+            }],
+        },
+        temp.path().join("manifests"),
     );
     let response = service
         .get_spatial_meta(GetSpatialMetaRequest {

@@ -2,16 +2,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::Duration;
 
 use tokio::sync::Notify;
 
 use crate::application::active_catalog::ActiveSpatialCatalog;
 use crate::domain::{
-    ObjectFetcher, SourceRegistry, SpatialObjectLocal, SpatialRun, SpatialRunCatalog,
+    ObjectFetcher, ObjectKey, SourceRegistry, SpatialObjectLocal, SpatialRun, SpatialRunCatalog,
     SpatialRunSnapshot, WeatherModelId,
 };
-use crate::error::SyncWorkerError;
+use crate::error::{SyncError, SyncWorkerError};
 
 pub struct SpatialSyncWorkerConfig {
     pub run_catalog: Arc<dyn SpatialRunCatalog>,
@@ -20,6 +21,8 @@ pub struct SpatialSyncWorkerConfig {
     pub forecast_days: usize,
     pub interval: Duration,
     pub parallelism: usize,
+    pub retry_attempts: usize,
+    pub retry_delay: Duration,
     pub bake_wake: Option<Arc<Notify>>,
 }
 
@@ -33,6 +36,8 @@ pub struct SpatialSyncWorker<F> {
     forecast_days: usize,
     interval: Duration,
     parallelism: usize,
+    retry_attempts: usize,
+    retry_delay: Duration,
     bake_wake: Option<Arc<Notify>>,
 }
 
@@ -56,6 +61,8 @@ where
             forecast_days: config.forecast_days,
             interval: config.interval,
             parallelism: config.parallelism.max(1),
+            retry_attempts: config.retry_attempts.max(1),
+            retry_delay: config.retry_delay,
             bake_wake: config.bake_wake,
         }
     }
@@ -91,6 +98,8 @@ where
             forecast_days: self.forecast_days,
             interval: self.interval,
             parallelism: self.parallelism,
+            retry_attempts: self.retry_attempts,
+            retry_delay: self.retry_delay,
             bake_wake: self.bake_wake.clone(),
         }
     }
@@ -207,7 +216,13 @@ where
                         let object_key = ObjectKey(object.object_key.clone());
                         let local_path = fetcher.synced_path(&object_key);
                         let cached = local_path.exists();
-                        if let Err(error) = fetcher.sync_object(&object_key) {
+                        if let Err(error) = sync_object_with_retry(
+                            fetcher.as_ref(),
+                            &object_key,
+                            model,
+                            self.retry_attempts,
+                            self.retry_delay,
+                        ) {
                             *failure.lock().expect("sync failure lock") =
                                 Some(SyncWorkerError::Sync(error));
                             break;
@@ -377,10 +392,58 @@ fn sync_percent(step: usize, total: usize) -> u8 {
     ((step.saturating_mul(100)) / total.max(1)).min(100) as u8
 }
 
+fn sync_object_with_retry<F>(
+    fetcher: &F,
+    object_key: &ObjectKey,
+    model: WeatherModelId,
+    max_attempts: usize,
+    base_delay: Duration,
+) -> Result<(), SyncError>
+where
+    F: ObjectFetcher,
+{
+    let mut attempt = 1usize;
+    let mut delay = base_delay;
+    loop {
+        match fetcher.sync_object(object_key) {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt >= max_attempts => return Err(error),
+            Err(error) => {
+                remove_partial_download(fetcher.synced_path(object_key));
+                tracing::warn!(
+                    model = %model,
+                    object_key = %object_key.0,
+                    attempt,
+                    max_attempts,
+                    delay_secs = delay.as_secs(),
+                    error = %error,
+                    "spatial sync object failed, retrying"
+                );
+                thread::sleep(delay);
+                attempt += 1;
+                delay = delay.saturating_mul(2);
+            }
+        }
+    }
+}
+
+fn remove_partial_download(dest: PathBuf) {
+    if dest.exists() {
+        return;
+    }
+    let partial = dest.with_extension("partial");
+    let _ = std::fs::remove_file(partial);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{format_file_size, format_file_size_label, sync_percent};
-    use crate::domain::{ObjectKey, SpatialObjectRef};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use super::{format_file_size, format_file_size_label, sync_object_with_retry, sync_percent};
+    use crate::domain::{ObjectFetcher, ObjectKey, SpatialObjectRef, WeatherModelId};
+    use crate::error::{HttpError, SyncError};
 
     #[test]
     fn sync_percent_reaches_one_hundred_on_last_step() {
@@ -394,6 +457,69 @@ mod tests {
         assert_eq!(format_file_size(1536), "1.5 KiB");
         assert_eq!(format_file_size(5 * 1024 * 1024), "5.0 MiB");
         assert_eq!(format_file_size_label(None), "-");
+    }
+
+    struct FlakyFetcher {
+        attempts: AtomicUsize,
+        fail_until: usize,
+    }
+
+    impl ObjectFetcher for FlakyFetcher {
+        fn sync_object(&self, _object_key: &ObjectKey) -> Result<(), SyncError> {
+            let attempt = self.attempts.fetch_add(1, Ordering::Relaxed) + 1;
+            if attempt < self.fail_until {
+                Err(SyncError::Download {
+                    url: "https://example.test/missing.om".to_string(),
+                    path: PathBuf::from("/tmp/missing.om"),
+                    source: Box::new(HttpError::MissingFixture {
+                        url: "https://example.test/missing.om".to_string(),
+                    }),
+                })
+            } else {
+                Ok(())
+            }
+        }
+
+        fn synced_path(&self, object_key: &ObjectKey) -> PathBuf {
+            PathBuf::from(&object_key.0)
+        }
+    }
+
+    #[test]
+    fn sync_object_with_retry_succeeds_after_transient_failures() {
+        let fetcher = FlakyFetcher {
+            attempts: AtomicUsize::new(0),
+            fail_until: 3,
+        };
+        let key = ObjectKey("data_spatial/test.om".to_string());
+        sync_object_with_retry(
+            &fetcher,
+            &key,
+            WeatherModelId::EcmwfIfs,
+            4,
+            Duration::from_millis(1),
+        )
+        .expect("sync");
+        assert_eq!(fetcher.attempts.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn sync_object_with_retry_returns_last_error_when_exhausted() {
+        let fetcher = FlakyFetcher {
+            attempts: AtomicUsize::new(0),
+            fail_until: usize::MAX,
+        };
+        let key = ObjectKey("data_spatial/test.om".to_string());
+        let error = sync_object_with_retry(
+            &fetcher,
+            &key,
+            WeatherModelId::EcmwfIfs,
+            3,
+            Duration::from_millis(1),
+        )
+        .expect_err("sync");
+        assert!(matches!(error, SyncError::Download { .. }));
+        assert_eq!(fetcher.attempts.load(Ordering::Relaxed), 3);
     }
 
     #[test]

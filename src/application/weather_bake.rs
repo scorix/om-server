@@ -14,17 +14,15 @@ use crate::domain::spatial_snapshot::{SpatialObjectLocal, SpatialRunSnapshot};
 use crate::domain::weather_field::SpatialFieldRegridder;
 use crate::error::WeatherBakeError;
 use crate::infrastructure::pmtiles_writer::{self, PmtilesMetadata, PmtilesTile};
-use crate::infrastructure::resort_coverage;
 use crate::infrastructure::tile_index::{self, TileCoord};
+use crate::infrastructure::weather_bake_profile::WeatherBakeProfile;
 use crate::infrastructure::weather_tile_renderer::{
     ScalarWeatherTileRenderer, WindWeatherTileRenderer,
 };
 
 pub const GLOBAL_MAX_ZOOM: u8 = 4;
-pub const REGIONAL_MIN_ZOOM: u8 = 5;
-pub const REGIONAL_MAX_ZOOM: u8 = 5;
 pub const MIN_ZOOM: u8 = 0;
-pub const MAX_ZOOM: u8 = REGIONAL_MAX_ZOOM;
+pub const MAX_ZOOM: u8 = GLOBAL_MAX_ZOOM;
 pub const DEFAULT_VARIABLE: &str = "temperature_2m";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,16 +52,15 @@ pub struct WeatherPmtilesManifest {
 #[derive(Debug, Clone)]
 pub struct WeatherBakePlan {
     pub layer: WeatherBakeLayer,
+    /// Spatial model this layer is baked from (a variable may pin a different model).
+    pub model: WeatherModelId,
     pub output_dir: PathBuf,
     pub manifest_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 pub struct WeatherBakeConfig {
-    pub sqlite_path: PathBuf,
     pub cache_dir: Option<PathBuf>,
-    pub model: WeatherModelId,
-    pub complete_only: bool,
     pub plans: Vec<WeatherBakePlan>,
 }
 
@@ -77,12 +74,10 @@ impl Default for WeatherBakeConfig {
     fn default() -> Self {
         let layer = WeatherBakeLayer::Temperature2m;
         Self {
-            sqlite_path: PathBuf::from("data/processed/opensnowmap/snowbuddy_osm.sqlite"),
             cache_dir: Some(PathBuf::from("data/cache/weather-pmtiles")),
-            model: WeatherModelId::EcmwfIfs,
-            complete_only: true,
             plans: vec![WeatherBakePlan {
                 layer,
+                model: WeatherModelId::EcmwfIfs,
                 output_dir: PathBuf::from("data/processed/weather/temperature_2m"),
                 manifest_path: PathBuf::from(
                     "data/manifests/weather_pmtiles_temperature_2m_manifest.json",
@@ -101,14 +96,16 @@ pub enum BakeTickResult {
     },
     Progress {
         variable: String,
+        model: String,
         run_ref: String,
         valid_time: String,
         completed: usize,
         total: usize,
     },
     RunComplete {
-        variable: String,
         run_ref: String,
+        /// Each entry is `variable:model` (e.g. `snow_depth:ecmwf_ifs025`).
+        layers: Vec<String>,
     },
 }
 
@@ -126,24 +123,20 @@ impl WeatherBakeUseCase {
             });
         }
 
-        let snapshot = match catalog.get(config.model) {
-            Some(snapshot) => snapshot,
-            None => {
-                return Ok(BakeTickResult::Idle {
-                    reason: "active spatial snapshot unavailable",
-                });
-            }
-        };
-        let snapshot = snapshot.as_ref();
-
-        let objects: Vec<_> = snapshot.objects.iter().collect();
-        if objects.is_empty() {
-            return Ok(BakeTickResult::Idle {
-                reason: "no synced timesteps",
-            });
-        }
-
+        let mut any_snapshot = false;
+        let mut representative_run_ref: Option<String> = None;
         for plan in &config.plans {
+            let Some(snapshot) = catalog.get(plan.model) else {
+                continue;
+            };
+            let snapshot = snapshot.as_ref();
+            let objects: Vec<_> = snapshot.objects.iter().collect();
+            if objects.is_empty() {
+                continue;
+            }
+            any_snapshot = true;
+            representative_run_ref.get_or_insert_with(|| snapshot.run_ref.clone());
+
             if let tick @ BakeTickResult::Progress { .. } =
                 self.bake_tick_plan(config, plan, snapshot, &objects, tile_coords)?
             {
@@ -151,15 +144,20 @@ impl WeatherBakeUseCase {
             }
         }
 
-        if all_layers_complete(config, snapshot, &objects)? {
+        if !any_snapshot {
+            return Ok(BakeTickResult::Idle {
+                reason: "active spatial snapshot unavailable",
+            });
+        }
+
+        if all_layers_complete(config, catalog)? {
             return Ok(BakeTickResult::RunComplete {
-                variable: config
+                run_ref: representative_run_ref.unwrap_or_default(),
+                layers: config
                     .plans
                     .iter()
-                    .map(|plan| plan.layer.id())
-                    .collect::<Vec<_>>()
-                    .join(","),
-                run_ref: snapshot.run_ref.clone(),
+                    .map(|plan| format!("{}:{}", plan.layer.id(), plan.model.as_str()))
+                    .collect(),
             });
         }
 
@@ -195,7 +193,6 @@ impl WeatherBakeUseCase {
 
         let object = pending[0];
         let artifact = bake_timestep(
-            config,
             plan,
             &object.local_path,
             &snapshot.run_ref,
@@ -227,6 +224,7 @@ impl WeatherBakeUseCase {
             .count();
         Ok(BakeTickResult::Progress {
             variable,
+            model: plan.model.as_str().to_string(),
             run_ref: snapshot.run_ref.clone(),
             valid_time: object.timestamp.clone(),
             completed,
@@ -235,45 +233,45 @@ impl WeatherBakeUseCase {
     }
 }
 
-pub fn load_weather_tile_coords(
-    config: &WeatherBakeConfig,
-) -> Result<Vec<TileCoord>, WeatherBakeError> {
-    let coverages =
-        resort_coverage::load_resort_coverages(&config.sqlite_path, config.complete_only)?;
-    Ok(tile_index::build_weather_tile_index(
-        GLOBAL_MAX_ZOOM,
-        REGIONAL_MIN_ZOOM,
-        REGIONAL_MAX_ZOOM,
-        &coverages,
-    ))
+/// Weather tiles are global-only (zoom 0..=GLOBAL_MAX_ZOOM). om-server intentionally does not
+/// depend on ski-resort regional coverage, so the index needs no external sqlite/catalog input.
+pub fn weather_tile_coords() -> Vec<TileCoord> {
+    tile_index::global_tile_coords(MIN_ZOOM, GLOBAL_MAX_ZOOM)
 }
 
 pub fn build_bake_plans(
     output_dir: PathBuf,
     manifest_dir: PathBuf,
-    model: WeatherModelId,
-    variables: Option<Vec<WeatherBakeLayer>>,
+    profile: &WeatherBakeProfile,
 ) -> Vec<WeatherBakePlan> {
-    let layers = variables.unwrap_or_else(|| WeatherBakeLayer::available_for_model(model));
-    layers
-        .into_iter()
-        .map(|layer| WeatherBakePlan {
-            layer,
-            output_dir: output_dir.join(layer.id()),
+    profile
+        .layers
+        .iter()
+        .map(|spec| WeatherBakePlan {
+            layer: spec.layer,
+            model: spec.model,
+            output_dir: output_dir.join(spec.layer.id()),
             manifest_path: manifest_dir
-                .join(format!("weather_pmtiles_{}_manifest.json", layer.id())),
+                .join(format!("weather_pmtiles_{}_manifest.json", spec.layer.id())),
         })
         .collect()
 }
 
 fn all_layers_complete(
     config: &WeatherBakeConfig,
-    snapshot: &SpatialRunSnapshot,
-    objects: &[&SpatialObjectLocal],
+    catalog: &ActiveSpatialCatalog,
 ) -> Result<bool, WeatherBakeError> {
     for plan in &config.plans {
-        let work = resolve_manifest_work(config, plan, snapshot, objects)?;
-        if !pending_objects(objects, &work.manifest).is_empty() {
+        let Some(snapshot) = catalog.get(plan.model) else {
+            return Ok(false);
+        };
+        let snapshot = snapshot.as_ref();
+        let objects: Vec<_> = snapshot.objects.iter().collect();
+        if objects.is_empty() {
+            continue;
+        }
+        let work = resolve_manifest_work(config, plan, snapshot, &objects)?;
+        if !pending_objects(&objects, &work.manifest).is_empty() {
             return Ok(false);
         }
     }
@@ -365,13 +363,13 @@ fn resolve_manifest_work(
 }
 
 fn init_manifest(
-    config: &WeatherBakeConfig,
+    _config: &WeatherBakeConfig,
     plan: &WeatherBakePlan,
     snapshot: &SpatialRunSnapshot,
     objects: &[&SpatialObjectLocal],
 ) -> WeatherPmtilesManifest {
     WeatherPmtilesManifest {
-        model: config.model.to_string(),
+        model: plan.model.to_string(),
         variable: plan.layer.id().to_string(),
         run_ref: snapshot.run_ref.clone(),
         default_valid_time: objects
@@ -383,8 +381,10 @@ fn init_manifest(
             .map(|object| object.timestamp.clone())
             .collect(),
         global_max_zoom: GLOBAL_MAX_ZOOM,
-        regional_min_zoom: REGIONAL_MIN_ZOOM,
-        regional_max_zoom: REGIONAL_MAX_ZOOM,
+        // Regional (resort) tiles were removed; keep the fields for manifest schema compatibility
+        // but pin them to the global max so consumers see no zoom beyond GLOBAL_MAX_ZOOM.
+        regional_min_zoom: GLOBAL_MAX_ZOOM,
+        regional_max_zoom: GLOBAL_MAX_ZOOM,
         min_zoom: MIN_ZOOM,
         max_zoom: MAX_ZOOM,
         generated_at: Utc::now(),
@@ -425,7 +425,6 @@ fn read_manifest(path: &Path) -> Result<Option<WeatherPmtilesManifest>, WeatherB
 }
 
 fn bake_timestep(
-    config: &WeatherBakeConfig,
     plan: &WeatherBakePlan,
     local_path: &Path,
     run_ref: &str,
@@ -477,13 +476,13 @@ fn bake_timestep(
         max_zoom: MAX_ZOOM,
         bounds: Some((-180.0, -85.051_128_78, 180.0, 85.051_128_78)),
         json: serde_json::json!({
-            "model": config.model.to_string(),
+            "model": plan.model.to_string(),
             "variable": layer.id(),
             "run_ref": run_ref,
             "valid_time": valid_time,
             "global_max_zoom": GLOBAL_MAX_ZOOM,
-            "regional_min_zoom": REGIONAL_MIN_ZOOM,
-            "regional_max_zoom": REGIONAL_MAX_ZOOM,
+            "regional_min_zoom": GLOBAL_MAX_ZOOM,
+            "regional_max_zoom": GLOBAL_MAX_ZOOM,
         })
         .to_string(),
     };
@@ -581,15 +580,17 @@ fn gc_run_dirs(base: &Path, current_run_ref: &str) -> Result<(), WeatherBakeErro
 mod tests {
     use super::{
         WeatherBakeConfig, WeatherBakeLayer, WeatherBakePlan, WeatherPmtilesArtifact,
-        WeatherPmtilesManifest, artifact_is_complete, build_bake_plans, pending_objects,
-        promote_staging_manifest, read_manifest, resolve_manifest_work, staging_manifest_path,
-        write_manifest,
+        WeatherPmtilesManifest, all_layers_complete, artifact_is_complete, build_bake_plans,
+        pending_objects, promote_staging_manifest, read_manifest, resolve_manifest_work,
+        staging_manifest_path, write_manifest,
     };
+    use crate::application::active_catalog::ActiveSpatialCatalog;
     use crate::domain::WeatherModelId;
     use crate::domain::spatial_snapshot::{SpatialObjectLocal, SpatialRunSnapshot};
     use chrono::Utc;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     #[test]
     fn pending_objects_preserves_snapshot_order_for_priority_bake() {
@@ -658,13 +659,62 @@ mod tests {
         ]
     }
 
-    fn sample_snapshot(run_ref: &str, objects: &[SpatialObjectLocal]) -> SpatialRunSnapshot {
+    fn sample_snapshot(
+        model: WeatherModelId,
+        run_ref: &str,
+        objects: &[SpatialObjectLocal],
+    ) -> SpatialRunSnapshot {
         SpatialRunSnapshot {
-            model: WeatherModelId::EcmwfIfs,
+            model,
             reference_time: "2025-06-09T12:00:00Z".to_string(),
             run_ref: run_ref.to_string(),
             objects: objects.to_vec(),
         }
+    }
+
+    #[test]
+    fn all_layers_complete_false_when_layer_model_catalog_missing() {
+        let sync_dir =
+            std::env::temp_dir().join(format!("om-all-layers-complete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sync_dir);
+        std::fs::create_dir_all(&sync_dir).expect("temp sync dir");
+
+        let catalog = ActiveSpatialCatalog::new();
+        catalog
+            .publish(
+                &sync_dir,
+                Arc::new(sample_snapshot(
+                    WeatherModelId::EcmwfIfs,
+                    "0600Z",
+                    &sample_objects(),
+                )),
+            )
+            .expect("publish ifs snapshot");
+
+        let config = WeatherBakeConfig {
+            cache_dir: None,
+            plans: vec![
+                WeatherBakePlan {
+                    layer: WeatherBakeLayer::Temperature2m,
+                    model: WeatherModelId::EcmwfIfs,
+                    output_dir: sync_dir.join("temperature_2m"),
+                    manifest_path: sync_dir.join("temperature_2m.json"),
+                },
+                WeatherBakePlan {
+                    layer: WeatherBakeLayer::SnowDepth,
+                    model: WeatherModelId::EcmwfIfs025,
+                    output_dir: sync_dir.join("snow_depth"),
+                    manifest_path: sync_dir.join("snow_depth.json"),
+                },
+            ],
+        };
+
+        assert!(
+            !all_layers_complete(&config, &catalog).expect("check layers"),
+            "snow_depth requires ecmwf_ifs025 catalog"
+        );
+
+        let _ = std::fs::remove_dir_all(&sync_dir);
     }
 
     #[test]
@@ -700,10 +750,11 @@ mod tests {
         let config = WeatherBakeConfig::default();
         let plan = WeatherBakePlan {
             layer: WeatherBakeLayer::Temperature2m,
+            model: WeatherModelId::EcmwfIfs,
             output_dir: dir.join("temperature_2m"),
             manifest_path: manifest_path.clone(),
         };
-        let snapshot = sample_snapshot("2025060912", &objects);
+        let snapshot = sample_snapshot(WeatherModelId::EcmwfIfs, "2025060912", &objects);
         let work = resolve_manifest_work(&config, &plan, &snapshot, &object_refs)
             .expect("resolve manifest work");
 
@@ -752,10 +803,11 @@ mod tests {
         let config = WeatherBakeConfig::default();
         let plan = WeatherBakePlan {
             layer: WeatherBakeLayer::Temperature2m,
+            model: WeatherModelId::EcmwfIfs,
             output_dir: dir.join("temperature_2m"),
             manifest_path: manifest_path.clone(),
         };
-        let snapshot = sample_snapshot("2025060918", &objects);
+        let snapshot = sample_snapshot(WeatherModelId::EcmwfIfs, "2025060918", &objects);
         let work = resolve_manifest_work(&config, &plan, &snapshot, &object_refs)
             .expect("resolve manifest work");
 
@@ -826,7 +878,10 @@ mod tests {
             .expect("published exists");
         assert_eq!(swapped.run_ref, "2025060918");
         assert_eq!(
-            swapped.artifacts.get("2025-06-09T18:00:00Z").map(|artifact| artifact.path.as_str()),
+            swapped
+                .artifacts
+                .get("2025-06-09T18:00:00Z")
+                .map(|artifact| artifact.path.as_str()),
             Some(dir.join("new.pmtiles").display().to_string().as_str())
         );
         assert!(!staging_manifest_path(&manifest_path).exists());
@@ -836,11 +891,15 @@ mod tests {
 
     #[test]
     fn build_bake_plans_uses_per_variable_output_and_manifest_paths() {
+        use crate::infrastructure::weather_bake_profile::load_weather_bake_profile;
+
+        let profile =
+            load_weather_bake_profile(PathBuf::from("config/weather_bake.toml").as_path())
+                .expect("default profile");
         let plans = build_bake_plans(
             PathBuf::from("data/processed/weather"),
             PathBuf::from("data/manifests"),
-            WeatherModelId::EcmwfIfs,
-            None,
+            &profile,
         );
         let temperature = plans
             .iter()
@@ -862,5 +921,62 @@ mod tests {
             cloud.manifest_path,
             PathBuf::from("data/manifests/weather_pmtiles_cloud_cover_manifest.json")
         );
+        assert_eq!(plans.len(), 7);
+        assert!(
+            plans
+                .iter()
+                .any(|plan| plan.layer == WeatherBakeLayer::SnowDepth
+                    && plan.model == WeatherModelId::EcmwfIfs025)
+        );
+        assert!(
+            plans
+                .iter()
+                .any(|plan| plan.layer == WeatherBakeLayer::Visibility
+                    && plan.model == WeatherModelId::EcmwfIfs)
+        );
+    }
+
+    #[test]
+    fn build_bake_plans_honors_profile_model_overrides() {
+        use crate::infrastructure::weather_bake_profile::{
+            WeatherBakeLayerSpec, WeatherBakeProfile,
+        };
+
+        let profile = WeatherBakeProfile {
+            layers: vec![
+                WeatherBakeLayerSpec {
+                    layer: WeatherBakeLayer::Temperature2m,
+                    model: WeatherModelId::EcmwfIfs,
+                },
+                WeatherBakeLayerSpec {
+                    layer: WeatherBakeLayer::SnowDepth,
+                    model: WeatherModelId::EcmwfIfs025,
+                },
+                WeatherBakeLayerSpec {
+                    layer: WeatherBakeLayer::Visibility,
+                    model: WeatherModelId::EcmwfIfs,
+                },
+            ],
+        };
+        let plans = build_bake_plans(
+            PathBuf::from("data/processed/weather"),
+            PathBuf::from("data/manifests"),
+            &profile,
+        );
+        let temperature = plans
+            .iter()
+            .find(|plan| plan.layer == WeatherBakeLayer::Temperature2m)
+            .expect("temperature plan");
+        assert_eq!(temperature.model, WeatherModelId::EcmwfIfs);
+        let snow_depth = plans
+            .iter()
+            .find(|plan| plan.layer == WeatherBakeLayer::SnowDepth)
+            .expect("snow_depth plan");
+        assert_eq!(snow_depth.model, WeatherModelId::EcmwfIfs025);
+        let visibility = plans
+            .iter()
+            .find(|plan| plan.layer == WeatherBakeLayer::Visibility)
+            .expect("visibility plan");
+        assert_eq!(visibility.model, WeatherModelId::EcmwfIfs);
     }
 }

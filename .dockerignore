@@ -1,3 +1,15 @@
-target
-.git
+# Runtime weather tiles — mounted as a volume in docker-compose, not baked into the image.
+data/
+
+# Rust build artifacts
+target/
+
+# Version control and local editor files
+.git/
 .gitignore
+.DS_Store
+.env
+
+# Docs and tests are not needed to compile the release binary
+docs/
+tests/

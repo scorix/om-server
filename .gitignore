@@ -1,7 +1,7 @@
 /target/
 
 # Local runtime data synced from Open-Meteo S3.
-/data/sync/
+/data/
 
 # Partial downloads and local environment files.
 *.partial

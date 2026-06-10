@@ -3,9 +3,7 @@ use std::f64::consts::PI;
 use image::{ImageBuffer, Rgba};
 
 use crate::domain::WeatherBakeLayer;
-use crate::domain::weather_colormap::{
-    cloud_cover_rgba, snow_depth_rgba, snowfall_rgba, temperature_rgba, wind_particle_rgba,
-};
+use crate::domain::weather_colormap::{encode_value_gray, wind_particle_rgba};
 use crate::domain::weather_field::RegularLatLonField;
 use crate::domain::{TileRequest, WeatherTileRenderer};
 use crate::error::TileRenderError;
@@ -24,16 +22,10 @@ impl<'a> ScalarWeatherTileRenderer<'a> {
     }
 
     fn sample_rgba(&self, lat: f64, lon: f64) -> [u8; 4] {
-        let Some(value) = self.field.sample(lat, lon) else {
+        let Some(range) = self.layer.value_range() else {
             return [0, 0, 0, 0];
         };
-        match self.layer {
-            WeatherBakeLayer::Temperature2m => temperature_rgba(value),
-            WeatherBakeLayer::CloudCover => cloud_cover_rgba(value),
-            WeatherBakeLayer::Snowfall => snowfall_rgba(value),
-            WeatherBakeLayer::SnowDepth => snow_depth_rgba(value),
-            WeatherBakeLayer::Wind => [0, 0, 0, 0],
-        }
+        encode_value_gray(self.field.sample(lat, lon), range)
     }
 
     pub fn render_tile_png(&self, z: u8, x: u32, y: u32) -> Result<Vec<u8>, TileRenderError> {
@@ -87,9 +79,13 @@ fn render_rgba_tile(
     let bounds = tile_bounds(z, x, y);
     let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::new(TILE_SIZE, TILE_SIZE);
     for pixel_y in 0..TILE_SIZE {
+        // Pixel rows are evenly spaced in web-mercator Y (not in latitude). Tile boundaries are
+        // already mercator-correct, but interpolating latitude linearly inside the tile stretches
+        // the field vertically (worst at low zoom / high latitude). Clients sample these tiles as
+        // standard web-mercator rasters, so the data must be baked the same way.
+        let lat = lat_at_pixel(z, y, pixel_y);
         for pixel_x in 0..TILE_SIZE {
             let lon = lng_at_pixel(bounds, pixel_x);
-            let lat = lat_at_pixel(bounds, pixel_y);
             image.put_pixel(pixel_x, pixel_y, Rgba(sample(lat, lon)));
         }
     }
@@ -103,10 +99,10 @@ fn render_rgba_tile(
 
 #[derive(Debug, Clone, Copy)]
 pub struct TileBounds {
-    west: f64,
-    south: f64,
-    east: f64,
-    north: f64,
+    pub west: f64,
+    pub south: f64,
+    pub east: f64,
+    pub north: f64,
 }
 
 pub fn tile_bounds(z: u8, x: u32, y: u32) -> TileBounds {
@@ -128,13 +124,56 @@ fn lng_at_pixel(bounds: TileBounds, pixel_x: u32) -> f64 {
     bounds.west + (bounds.east - bounds.west) * t
 }
 
-fn lat_at_pixel(bounds: TileBounds, pixel_y: u32) -> f64 {
-    let t = (f64::from(pixel_y) + 0.5) / f64::from(TILE_SIZE);
-    bounds.north + (bounds.south - bounds.north) * t
+fn lat_at_pixel(z: u8, y: u32, pixel_y: u32) -> f64 {
+    let scale = 2f64.powi(i32::from(z));
+    let global_y = (f64::from(y) + (f64::from(pixel_y) + 0.5) / f64::from(TILE_SIZE)) / scale;
+    lat_from_tile_y(global_y)
 }
 
 fn lat_from_tile_y(y: f64) -> f64 {
     let n = PI * (1.0 - 2.0 * y);
     let lat = (n.sinh()).atan().to_degrees();
     lat.clamp(-WEB_MERCATOR_MAX_LAT, WEB_MERCATOR_MAX_LAT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pixel_rows_are_mercator_spaced_not_latitude_spaced() {
+        // z0 single world tile. Pixel rows must be evenly spaced in web-mercator Y, which means the
+        // latitude step shrinks toward the poles. If rows were latitude-linear the steps would all
+        // be equal, stretching the field vertically when clients sample it as a mercator raster.
+        let equator_step = (lat_at_pixel(0, 0, 128) - lat_at_pixel(0, 0, 127)).abs();
+        let pole_step = (lat_at_pixel(0, 0, 1) - lat_at_pixel(0, 0, 0)).abs();
+        assert!(
+            equator_step > pole_step * 2.0,
+            "expected mercator spacing (equator_step={equator_step}, pole_step={pole_step})"
+        );
+    }
+
+    #[test]
+    fn tile_pixels_align_with_neighbour_tile() {
+        // The last pixel row of a tile and the first pixel row of the tile directly below it should
+        // be one pixel apart in the global mercator grid, i.e. continuous across the seam.
+        let z = 3u8;
+        let bottom_of_top = lat_at_pixel(z, 2, TILE_SIZE - 1);
+        let top_of_bottom = lat_at_pixel(z, 3, 0);
+        let one_pixel =
+            (lat_at_pixel(z, 2, TILE_SIZE - 1) - lat_at_pixel(z, 2, TILE_SIZE - 2)).abs();
+        assert!((bottom_of_top - top_of_bottom).abs() < one_pixel * 1.5);
+    }
+
+    #[test]
+    fn tile_center_pixels_match_tile_bounds() {
+        // The pixel-center latitudes at the tile edges must stay inside the mercator tile bounds.
+        let z = 4u8;
+        let y = 5u32;
+        let bounds = tile_bounds(z, 0, y);
+        let first = lat_at_pixel(z, y, 0);
+        let last = lat_at_pixel(z, y, TILE_SIZE - 1);
+        assert!(first <= bounds.north && first > bounds.south);
+        assert!(last >= bounds.south && last < bounds.north);
+    }
 }

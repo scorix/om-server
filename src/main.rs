@@ -1,17 +1,16 @@
-use std::path::PathBuf;
-
 use clap::Parser;
 
 use om_server::application::sync_worker::{SpatialSyncWorker, SpatialSyncWorkerConfig};
-use om_server::application::weather_bake::{WeatherBakeConfig, build_bake_plans};
+use om_server::application::weather_bake::WeatherBakeConfig;
+use om_server::application::weather_bake::build_bake_plans;
 use om_server::application::weather_bake_wake::WeatherBakeWake;
 use om_server::application::weather_bake_worker::{WeatherBakeWorker, WeatherBakeWorkerConfig};
 use om_server::application::{ActiveSpatialCatalog, SpatialService};
-use om_server::domain::WeatherBakeLayer;
 use om_server::error::MainError;
 use om_server::r#gen::FILE_DESCRIPTOR_SET;
 use om_server::r#gen::om_spatial_service_server::OmSpatialServiceServer;
 use om_server::infrastructure::config::ServerConfig;
+use om_server::infrastructure::weather_bake_profile::load_weather_bake_profile;
 use om_server::infrastructure::{
     OmfilesDatasetReader, S3ObjectFetcher, open_meteo::OpenMeteoSources,
 };
@@ -50,8 +49,9 @@ async fn run_serve(config: ServerConfig) -> Result<(), MainError> {
     let run_catalog = std::sync::Arc::new(
         om_server::infrastructure::open_meteo::OpenMeteoSpatialRunCatalog::new(s3_catalog),
     );
-    let bake_config = weather_bake_config_from_env(&config);
+    let bake_config = weather_bake_config(&config)?;
     let bake_wake = WeatherBakeWake::new();
+    let blend_profile = load_weather_bake_profile(&config.weather_bake_config)?;
     let worker = SpatialSyncWorker::new(
         OpenMeteoSources.registry(),
         S3ObjectFetcher::new(config.s3_base_url.clone(), config.om_sync_dir.clone()),
@@ -63,6 +63,8 @@ async fn run_serve(config: ServerConfig) -> Result<(), MainError> {
             forecast_days: config.sync_forecast_days as usize,
             interval: config.sync_interval(),
             parallelism: config.sync_parallelism,
+            retry_attempts: config.sync_retry_attempts,
+            retry_delay: config.sync_retry_delay(),
             bake_wake: Some(bake_wake.subscribe()),
         },
     );
@@ -72,7 +74,7 @@ async fn run_serve(config: ServerConfig) -> Result<(), MainError> {
         let bake_worker = WeatherBakeWorker::new(WeatherBakeWorkerConfig {
             bake,
             catalog: catalog.clone(),
-            interval: weather_bake_interval_from_env(),
+            interval: config.weather_bake_interval(),
             wake: Some(bake_wake.subscribe()),
         });
         tokio::spawn(bake_worker.run_forever());
@@ -83,6 +85,8 @@ async fn run_serve(config: ServerConfig) -> Result<(), MainError> {
         fetcher,
         OmfilesDatasetReader,
         catalog,
+        blend_profile,
+        config.weather_manifest_dir.clone(),
     ));
     let grpc = GrpcSpatialService::new(service);
     let addr = config
@@ -96,6 +100,7 @@ async fn run_serve(config: ServerConfig) -> Result<(), MainError> {
     tracing::info!(
         %addr,
         sync_dir = %config.om_sync_dir.display(),
+        weather_manifest_dir = %config.weather_manifest_dir.display(),
         sync_models = ?config.sync_models,
         weather_bake_enabled = bake_config.is_some(),
         "om-server listening"
@@ -114,58 +119,21 @@ async fn run_serve(config: ServerConfig) -> Result<(), MainError> {
     Ok(())
 }
 
-fn weather_bake_config_from_env(config: &ServerConfig) -> Option<WeatherBakeConfig> {
-    let output_dir = std::env::var("OM_SERVER_WEATHER_BAKE_OUTPUT_DIR")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)?;
-    let sqlite_path = std::env::var("OM_SERVER_WEATHER_BAKE_SQLITE")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("data/processed/opensnowmap/snowbuddy_osm.sqlite"));
-    let manifest_dir = std::env::var("OM_SERVER_WEATHER_BAKE_MANIFEST_DIR")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("data/manifests"));
-    let cache_dir = std::env::var("OM_SERVER_WEATHER_BAKE_CACHE_DIR")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from("data/cache/weather-pmtiles")));
-
-    let model = config
-        .parsed_sync_models()
-        .ok()
-        .and_then(|models| models.first().copied())
-        .unwrap_or(om_server::domain::WeatherModelId::EcmwfIfs);
-
-    let variables = std::env::var("OM_SERVER_WEATHER_BAKE_VARIABLES")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            value
-                .split(',')
-                .filter_map(|part| WeatherBakeLayer::from_id(part.trim()))
-                .collect::<Vec<_>>()
-        })
-        .filter(|layers| !layers.is_empty());
-
-    Some(WeatherBakeConfig {
-        sqlite_path,
-        cache_dir,
-        model,
-        complete_only: true,
-        plans: build_bake_plans(output_dir, manifest_dir, model, variables),
-    })
-}
-
-fn weather_bake_interval_from_env() -> std::time::Duration {
-    std::env::var("OM_SERVER_WEATHER_BAKE_INTERVAL_SECS")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|&secs| secs > 0)
-        .map(std::time::Duration::from_secs)
-        .unwrap_or_else(|| std::time::Duration::from_secs(60))
+fn weather_bake_config(config: &ServerConfig) -> Result<Option<WeatherBakeConfig>, MainError> {
+    let Some(output_dir) = config
+        .weather_bake_output_dir
+        .as_ref()
+        .filter(|path| !path.as_os_str().is_empty())
+    else {
+        return Ok(None);
+    };
+    let profile = load_weather_bake_profile(&config.weather_bake_config)?;
+    Ok(Some(WeatherBakeConfig {
+        cache_dir: Some(config.weather_bake_cache_dir.clone()),
+        plans: build_bake_plans(
+            output_dir.clone(),
+            config.weather_manifest_dir.clone(),
+            &profile,
+        ),
+    }))
 }
