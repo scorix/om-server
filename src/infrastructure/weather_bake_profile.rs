@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::str::FromStr;
@@ -17,11 +17,15 @@ pub struct WeatherBakeLayerSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeatherBakeProfile {
+    /// Spatial model whose synced timesteps define the shared map timeline grid.
+    pub timeline_model: WeatherModelId,
     pub layers: Vec<WeatherBakeLayerSpec>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct WeatherBakeProfileFile {
+    /// Optional override; otherwise the model referenced by the most layers wins.
+    timeline_model: Option<String>,
     layers: Vec<WeatherBakeLayerEntry>,
 }
 
@@ -79,7 +83,39 @@ fn resolve_profile(
         layers.push(WeatherBakeLayerSpec { layer, model });
     }
 
-    Ok(WeatherBakeProfile { layers })
+    let timeline_model = resolve_timeline_model(path, &layers, file.timeline_model.as_deref())?;
+
+    Ok(WeatherBakeProfile {
+        timeline_model,
+        layers,
+    })
+}
+
+fn resolve_timeline_model(
+    path: &Path,
+    layers: &[WeatherBakeLayerSpec],
+    explicit: Option<&str>,
+) -> Result<WeatherModelId, WeatherBakeError> {
+    if let Some(value) = explicit {
+        return parse_model(path, value.trim(), "timeline_model");
+    }
+
+    let mut counts = HashMap::<WeatherModelId, usize>::new();
+    for spec in layers {
+        *counts.entry(spec.model).or_default() += 1;
+    }
+    let max_count = counts.values().copied().max().unwrap_or(0);
+    for spec in layers {
+        if counts.get(&spec.model).copied().unwrap_or(0) == max_count {
+            return Ok(spec.model);
+        }
+    }
+    layers
+        .first()
+        .map(|spec| spec.model)
+        .ok_or(WeatherBakeError::EmptyLayers {
+            path: path.to_path_buf(),
+        })
 }
 
 fn parse_model(
@@ -108,6 +144,7 @@ mod tests {
         let error = resolve_profile(
             Path::new("weather_bake.toml"),
             WeatherBakeProfileFile {
+                timeline_model: None,
                 layers: vec![super::WeatherBakeLayerEntry {
                     variable: "temperature_2m".to_string(),
                     model: None,
@@ -127,6 +164,7 @@ mod tests {
         let profile = resolve_profile(
             Path::new("weather_bake.toml"),
             WeatherBakeProfileFile {
+                timeline_model: None,
                 layers: vec![
                     super::WeatherBakeLayerEntry {
                         variable: "temperature_2m".to_string(),
@@ -141,6 +179,7 @@ mod tests {
         )
         .expect("profile");
 
+        assert_eq!(profile.timeline_model, WeatherModelId::EcmwfIfs);
         assert_eq!(
             profile.layers,
             vec![
@@ -154,6 +193,29 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn resolve_timeline_model_honors_explicit_override() {
+        let profile = resolve_profile(
+            Path::new("weather_bake.toml"),
+            WeatherBakeProfileFile {
+                timeline_model: Some("ecmwf_ifs025".to_string()),
+                layers: vec![
+                    super::WeatherBakeLayerEntry {
+                        variable: "temperature_2m".to_string(),
+                        model: Some("ecmwf_ifs".to_string()),
+                    },
+                    super::WeatherBakeLayerEntry {
+                        variable: "snow_depth".to_string(),
+                        model: Some("ecmwf_ifs025".to_string()),
+                    },
+                ],
+            },
+        )
+        .expect("profile");
+
+        assert_eq!(profile.timeline_model, WeatherModelId::EcmwfIfs025);
     }
 
     #[test]

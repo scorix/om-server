@@ -12,6 +12,7 @@ pub mod tile_renderer;
 pub mod weather_bake_layer;
 pub mod weather_colormap;
 pub mod weather_field;
+pub mod weather_temporal;
 
 pub use catalog::{
     ModelPriorityPolicy, ModelPriorityRule, PolicyContext, ResolvedElement,
@@ -27,3 +28,7 @@ pub use spatial_run::{SpatialObjectRef, SpatialRun, SpatialRunCatalog};
 pub use spatial_snapshot::{SpatialObjectLocal, SpatialRunSnapshot};
 pub use tile_renderer::{NoopWeatherTileRenderer, TileRequest, WeatherTileRenderer};
 pub use weather_bake_layer::WeatherBakeLayer;
+pub use weather_temporal::{
+    TemporalBracket, bracket_objects, canonical_times_within_native_horizon,
+    layer_valid_times_on_shared_timeline, native_time_bounds, parse_valid_time,
+};

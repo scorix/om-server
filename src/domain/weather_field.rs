@@ -67,6 +67,28 @@ impl RegularLatLonField {
     pub fn set(&mut self, col: u32, row: u32, value: Option<f32>) {
         self.values[(row * self.width + col) as usize] = value.unwrap_or(f32::NAN);
     }
+
+    /// Linear blend between two same-sized fields. Non-finite samples prefer the finite neighbour.
+    pub fn lerp(&self, other: &Self, fraction: f64) -> Self {
+        debug_assert_eq!(self.width, other.width);
+        debug_assert_eq!(self.height, other.height);
+        let weight = fraction.clamp(0.0, 1.0) as f32;
+        let mut values = self.values.clone();
+        for (index, right) in other.values.iter().enumerate() {
+            let left = self.values[index];
+            values[index] = match (left.is_finite(), right.is_finite()) {
+                (true, true) => left + (right - left) * weight,
+                (true, false) => left,
+                (false, true) => *right,
+                (false, false) => f32::NAN,
+            };
+        }
+        Self {
+            width: self.width,
+            height: self.height,
+            values,
+        }
+    }
 }
 
 pub struct SpatialFieldRegridder;
@@ -151,6 +173,16 @@ fn normalize_longitude(longitude: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::domain::SpatialGridMetadata;
+
+    #[test]
+    fn lerp_blends_overlapping_finite_cells() {
+        let mut left = RegularLatLonField::new(2, 2);
+        let mut right = RegularLatLonField::new(2, 2);
+        left.set(0, 0, Some(0.0));
+        right.set(0, 0, Some(10.0));
+        let blended = left.lerp(&right, 0.25);
+        assert_eq!(blended.values[0], 2.5);
+    }
 
     #[test]
     fn regrid_regular_fixture_produces_finite_center_value() {

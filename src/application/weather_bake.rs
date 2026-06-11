@@ -11,7 +11,8 @@ use crate::application::active_catalog::ActiveSpatialCatalog;
 use crate::domain::WeatherBakeLayer;
 use crate::domain::WeatherModelId;
 use crate::domain::spatial_snapshot::{SpatialObjectLocal, SpatialRunSnapshot};
-use crate::domain::weather_field::SpatialFieldRegridder;
+use crate::domain::weather_field::{RegularLatLonField, SpatialFieldRegridder};
+use crate::domain::weather_temporal::{bracket_objects, layer_valid_times_on_shared_timeline};
 use crate::error::WeatherBakeError;
 use crate::infrastructure::pmtiles_writer::{self, PmtilesMetadata, PmtilesTile};
 use crate::infrastructure::tile_index::{self, TileCoord};
@@ -61,13 +62,9 @@ pub struct WeatherBakePlan {
 #[derive(Debug, Clone)]
 pub struct WeatherBakeConfig {
     pub cache_dir: Option<PathBuf>,
+    /// Spatial model whose synced timesteps define the shared map timeline grid.
+    pub timeline_model: WeatherModelId,
     pub plans: Vec<WeatherBakePlan>,
-}
-
-impl WeatherBakeConfig {
-    pub fn primary_plan(&self) -> Option<&WeatherBakePlan> {
-        self.plans.first()
-    }
 }
 
 impl Default for WeatherBakeConfig {
@@ -75,6 +72,7 @@ impl Default for WeatherBakeConfig {
         let layer = WeatherBakeLayer::Temperature2m;
         Self {
             cache_dir: Some(PathBuf::from("data/cache/weather-pmtiles")),
+            timeline_model: WeatherModelId::EcmwfIfs,
             plans: vec![WeatherBakePlan {
                 layer,
                 model: WeatherModelId::EcmwfIfs,
@@ -110,6 +108,42 @@ pub enum BakeTickResult {
 }
 
 impl WeatherBakeUseCase {
+    /// Drops baked PMTiles and resets manifests when the catalog timeline no longer matches
+    /// what is published (e.g. after bake-logic or `data_spatial` sync changes).
+    pub fn prepare(
+        &self,
+        config: &WeatherBakeConfig,
+        catalog: &ActiveSpatialCatalog,
+    ) -> Result<(), WeatherBakeError> {
+        if config.plans.is_empty() {
+            return Ok(());
+        }
+        let Some((timeline_model, timeline_snapshot)) = shared_timeline(config, catalog) else {
+            return Ok(());
+        };
+        let timeline_objects: Vec<_> = timeline_snapshot.objects.iter().collect();
+        for plan in &config.plans {
+            let Some(snapshot) = catalog.get(plan.model) else {
+                continue;
+            };
+            let snapshot = snapshot.as_ref();
+            if snapshot.objects.is_empty() {
+                continue;
+            }
+            let layer_objects = layer_valid_times_on_timeline(
+                &timeline_objects,
+                snapshot,
+                timeline_model,
+                plan.model,
+            )?;
+            if layer_objects.is_empty() {
+                continue;
+            }
+            let _ = resolve_manifest_work(config, plan, snapshot, &layer_objects)?;
+        }
+        Ok(())
+    }
+
     /// Incremental bake step across all configured layers: at most one valid_time per call.
     pub fn bake_tick(
         &self,
@@ -123,6 +157,13 @@ impl WeatherBakeUseCase {
             });
         }
 
+        let Some((timeline_model, timeline_snapshot)) = shared_timeline(config, catalog) else {
+            return Ok(BakeTickResult::Idle {
+                reason: "shared timeline unavailable",
+            });
+        };
+        let timeline_objects: Vec<_> = timeline_snapshot.objects.iter().collect();
+
         let mut any_snapshot = false;
         let mut representative_run_ref: Option<String> = None;
         for plan in &config.plans {
@@ -130,16 +171,29 @@ impl WeatherBakeUseCase {
                 continue;
             };
             let snapshot = snapshot.as_ref();
-            let objects: Vec<_> = snapshot.objects.iter().collect();
-            if objects.is_empty() {
+            if snapshot.objects.is_empty() {
+                continue;
+            }
+            let layer_objects = layer_valid_times_on_timeline(
+                &timeline_objects,
+                snapshot,
+                timeline_model,
+                plan.model,
+            )?;
+            if layer_objects.is_empty() {
                 continue;
             }
             any_snapshot = true;
             representative_run_ref.get_or_insert_with(|| snapshot.run_ref.clone());
 
-            if let tick @ BakeTickResult::Progress { .. } =
-                self.bake_tick_plan(config, plan, snapshot, &objects, tile_coords)?
-            {
+            if let tick @ BakeTickResult::Progress { .. } = self.bake_tick_plan(
+                config,
+                plan,
+                snapshot,
+                timeline_model,
+                &layer_objects,
+                tile_coords,
+            )? {
                 return Ok(tick);
             }
         }
@@ -171,12 +225,13 @@ impl WeatherBakeUseCase {
         config: &WeatherBakeConfig,
         plan: &WeatherBakePlan,
         snapshot: &SpatialRunSnapshot,
-        objects: &[&SpatialObjectLocal],
+        timeline_model: WeatherModelId,
+        timeline_objects: &[&SpatialObjectLocal],
         tile_coords: &[TileCoord],
     ) -> Result<BakeTickResult, WeatherBakeError> {
         let variable = plan.layer.id().to_string();
-        let mut work = resolve_manifest_work(config, plan, snapshot, objects)?;
-        let pending = pending_objects(objects, &work.manifest);
+        let mut work = resolve_manifest_work(config, plan, snapshot, timeline_objects)?;
+        let pending = pending_timeline_times(timeline_objects, &work.manifest);
         if pending.is_empty() {
             if work.uses_staging {
                 promote_staging_manifest(&plan.manifest_path)?;
@@ -194,8 +249,8 @@ impl WeatherBakeUseCase {
         let object = pending[0];
         let artifact = bake_timestep(
             plan,
-            &object.local_path,
-            &snapshot.run_ref,
+            snapshot,
+            timeline_model,
             &object.timestamp,
             tile_coords,
         )?;
@@ -207,7 +262,8 @@ impl WeatherBakeUseCase {
         }
         write_manifest(&work.path, &work.manifest)?;
 
-        if pending_objects(objects, &work.manifest).is_empty() && work.uses_staging {
+        if pending_timeline_times(timeline_objects, &work.manifest).is_empty() && work.uses_staging
+        {
             promote_staging_manifest(&plan.manifest_path)?;
             gc_old_runs(
                 &plan.output_dir,
@@ -228,7 +284,7 @@ impl WeatherBakeUseCase {
             run_ref: snapshot.run_ref.clone(),
             valid_time: object.timestamp.clone(),
             completed,
-            total: objects.len(),
+            total: timeline_objects.len(),
         })
     }
 }
@@ -257,29 +313,59 @@ pub fn build_bake_plans(
         .collect()
 }
 
+fn shared_timeline(
+    config: &WeatherBakeConfig,
+    catalog: &ActiveSpatialCatalog,
+) -> Option<(WeatherModelId, Arc<SpatialRunSnapshot>)> {
+    let snapshot = catalog.get(config.timeline_model)?;
+    if snapshot.objects.is_empty() {
+        return None;
+    }
+    Some((config.timeline_model, snapshot))
+}
+
 fn all_layers_complete(
     config: &WeatherBakeConfig,
     catalog: &ActiveSpatialCatalog,
 ) -> Result<bool, WeatherBakeError> {
+    let Some((timeline_model, timeline_snapshot)) = shared_timeline(config, catalog) else {
+        return Ok(false);
+    };
+    let timeline_objects: Vec<_> = timeline_snapshot.objects.iter().collect();
     for plan in &config.plans {
         let Some(snapshot) = catalog.get(plan.model) else {
             return Ok(false);
         };
         let snapshot = snapshot.as_ref();
-        let objects: Vec<_> = snapshot.objects.iter().collect();
-        if objects.is_empty() {
+        if snapshot.objects.is_empty() {
             continue;
         }
-        let work = resolve_manifest_work(config, plan, snapshot, &objects)?;
-        if !pending_objects(&objects, &work.manifest).is_empty() {
+        let layer_objects =
+            layer_valid_times_on_timeline(&timeline_objects, snapshot, timeline_model, plan.model)?;
+        let work = resolve_manifest_work(config, plan, snapshot, &layer_objects)?;
+        if !pending_timeline_times(&layer_objects, &work.manifest).is_empty() {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-fn pending_objects<'a>(
-    objects: &[&'a SpatialObjectLocal],
+fn layer_valid_times_on_timeline<'a>(
+    timeline_objects: &[&'a SpatialObjectLocal],
+    layer_snapshot: &'a SpatialRunSnapshot,
+    timeline_model: WeatherModelId,
+    layer_model: WeatherModelId,
+) -> Result<Vec<&'a SpatialObjectLocal>, WeatherBakeError> {
+    layer_valid_times_on_shared_timeline(
+        timeline_objects,
+        &layer_snapshot.objects,
+        timeline_model == layer_model,
+    )
+    .map_err(WeatherBakeError::Timestamp)
+}
+
+fn pending_timeline_times<'a>(
+    timeline_objects: &[&'a SpatialObjectLocal],
     manifest: &WeatherPmtilesManifest,
 ) -> Vec<&'a SpatialObjectLocal> {
     let completed: HashSet<_> = manifest
@@ -288,7 +374,7 @@ fn pending_objects<'a>(
         .filter(|(_, artifact)| artifact_is_complete(artifact))
         .map(|(valid_time, _)| valid_time.as_str())
         .collect();
-    objects
+    timeline_objects
         .iter()
         .copied()
         .filter(|object| !completed.contains(object.timestamp.as_str()))
@@ -317,17 +403,35 @@ fn resolve_manifest_work(
     config: &WeatherBakeConfig,
     plan: &WeatherBakePlan,
     snapshot: &SpatialRunSnapshot,
-    objects: &[&SpatialObjectLocal],
+    timeline_objects: &[&SpatialObjectLocal],
 ) -> Result<ManifestWork, WeatherBakeError> {
     let published_path = &plan.manifest_path;
     let published = read_manifest(published_path)?;
     let has_published = published.is_some();
-    if let Some(existing) = published
+    let expected_times = expected_valid_times(timeline_objects);
+
+    if let Some(existing) = published.as_ref()
         && existing.run_ref == snapshot.run_ref
     {
+        if manifest_matches_plan(existing, plan, &expected_times) {
+            return Ok(ManifestWork {
+                path: published_path.clone(),
+                manifest: existing.clone(),
+                uses_staging: false,
+            });
+        }
+        tracing::info!(
+            variable = plan.layer.id(),
+            model = plan.model.as_str(),
+            run_ref = snapshot.run_ref,
+            "weather bake manifest stale; purging baked artifacts"
+        );
+        purge_layer_bake(config, plan, existing)?;
+        let fresh = init_manifest(config, plan, snapshot, timeline_objects);
+        write_manifest(published_path, &fresh)?;
         return Ok(ManifestWork {
             path: published_path.clone(),
-            manifest: existing,
+            manifest: fresh,
             uses_staging: false,
         });
     }
@@ -336,14 +440,25 @@ fn resolve_manifest_work(
     if let Some(staging) = read_manifest(&staging_path)?
         && staging.run_ref == snapshot.run_ref
     {
-        return Ok(ManifestWork {
-            path: staging_path,
-            manifest: staging,
-            uses_staging: true,
-        });
-    }
-
-    if staging_path.exists() {
+        if manifest_matches_plan(&staging, plan, &expected_times) {
+            return Ok(ManifestWork {
+                path: staging_path,
+                manifest: staging,
+                uses_staging: true,
+            });
+        }
+        tracing::info!(
+            variable = plan.layer.id(),
+            model = plan.model.as_str(),
+            run_ref = snapshot.run_ref,
+            "weather bake staging manifest stale; purging in-progress bake"
+        );
+        purge_layer_bake(config, plan, &staging)?;
+        std::fs::remove_file(&staging_path).map_err(|source| WeatherBakeError::WriteFile {
+            path: staging_path.clone(),
+            source,
+        })?;
+    } else if staging_path.exists() {
         std::fs::remove_file(&staging_path).map_err(|source| WeatherBakeError::WriteFile {
             path: staging_path.clone(),
             source,
@@ -351,14 +466,60 @@ fn resolve_manifest_work(
     }
 
     let uses_staging = has_published;
+    gc_old_runs(
+        &plan.output_dir,
+        config.cache_dir.as_deref(),
+        &snapshot.run_ref,
+    )?;
+    let fresh = init_manifest(config, plan, snapshot, timeline_objects);
     Ok(ManifestWork {
         path: if uses_staging {
             staging_path
         } else {
             published_path.clone()
         },
-        manifest: init_manifest(config, plan, snapshot, objects),
+        manifest: fresh,
         uses_staging,
+    })
+}
+
+fn expected_valid_times(timeline_objects: &[&SpatialObjectLocal]) -> Vec<String> {
+    timeline_objects
+        .iter()
+        .map(|object| object.timestamp.clone())
+        .collect()
+}
+
+fn manifest_matches_plan(
+    manifest: &WeatherPmtilesManifest,
+    plan: &WeatherBakePlan,
+    expected_times: &[String],
+) -> bool {
+    manifest.variable == plan.layer.id()
+        && manifest.model == plan.model.to_string()
+        && manifest.valid_times == expected_times
+}
+
+fn purge_layer_bake(
+    config: &WeatherBakeConfig,
+    plan: &WeatherBakePlan,
+    manifest: &WeatherPmtilesManifest,
+) -> Result<(), WeatherBakeError> {
+    purge_run_dir(&plan.output_dir, &manifest.run_ref)?;
+    if let Some(cache_dir) = config.cache_dir.as_deref() {
+        purge_run_dir(cache_dir, &manifest.run_ref)?;
+    }
+    Ok(())
+}
+
+fn purge_run_dir(base: &Path, run_ref: &str) -> Result<(), WeatherBakeError> {
+    let run_dir = base.join(run_ref);
+    if !run_dir.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(&run_dir).map_err(|source| WeatherBakeError::WriteFile {
+        path: run_dir,
+        source,
     })
 }
 
@@ -366,17 +527,17 @@ fn init_manifest(
     _config: &WeatherBakeConfig,
     plan: &WeatherBakePlan,
     snapshot: &SpatialRunSnapshot,
-    objects: &[&SpatialObjectLocal],
+    timeline_objects: &[&SpatialObjectLocal],
 ) -> WeatherPmtilesManifest {
     WeatherPmtilesManifest {
         model: plan.model.to_string(),
         variable: plan.layer.id().to_string(),
         run_ref: snapshot.run_ref.clone(),
-        default_valid_time: objects
+        default_valid_time: timeline_objects
             .first()
             .map(|object| object.timestamp.clone())
             .unwrap_or_default(),
-        valid_times: objects
+        valid_times: timeline_objects
             .iter()
             .map(|object| object.timestamp.clone())
             .collect(),
@@ -424,23 +585,89 @@ fn read_manifest(path: &Path) -> Result<Option<WeatherPmtilesManifest>, WeatherB
     }
 }
 
+#[derive(Debug, Clone)]
+enum FieldPathSource<'a> {
+    Direct(&'a Path),
+    Interpolated {
+        before: &'a Path,
+        after: &'a Path,
+        fraction: f64,
+    },
+}
+
+fn field_path_source<'a>(
+    layer_snapshot: &'a SpatialRunSnapshot,
+    timeline_model: WeatherModelId,
+    layer_model: WeatherModelId,
+    valid_time: &str,
+) -> Result<FieldPathSource<'a>, WeatherBakeError> {
+    if layer_model == timeline_model {
+        let Some(object) = layer_snapshot
+            .objects
+            .iter()
+            .find(|object| object.timestamp == valid_time)
+        else {
+            return Err(WeatherBakeError::MissingNativeTimestep {
+                valid_time: valid_time.to_string(),
+            });
+        };
+        return Ok(FieldPathSource::Direct(&object.local_path));
+    }
+
+    let bracket = bracket_objects(&layer_snapshot.objects, valid_time)
+        .map_err(WeatherBakeError::Timestamp)?;
+    match (bracket.before, bracket.after) {
+        (None, None) => Err(WeatherBakeError::MissingNativeTimestep {
+            valid_time: valid_time.to_string(),
+        }),
+        (Some(object), None) | (None, Some(object)) => {
+            Ok(FieldPathSource::Direct(&object.local_path))
+        }
+        (Some(before), Some(after)) if before.timestamp == after.timestamp => {
+            Ok(FieldPathSource::Direct(&before.local_path))
+        }
+        (Some(before), Some(after)) => Ok(FieldPathSource::Interpolated {
+            before: &before.local_path,
+            after: &after.local_path,
+            fraction: bracket.fraction,
+        }),
+    }
+}
+
+fn load_scalar_field(
+    source: &FieldPathSource<'_>,
+    variable: &str,
+) -> Result<RegularLatLonField, WeatherBakeError> {
+    match source {
+        FieldPathSource::Direct(path) => Ok(SpatialFieldRegridder::from_spatial_file_or_empty(
+            path, variable,
+        )?),
+        FieldPathSource::Interpolated {
+            before,
+            after,
+            fraction,
+        } => {
+            let left = SpatialFieldRegridder::from_spatial_file_or_empty(before, variable)?;
+            let right = SpatialFieldRegridder::from_spatial_file_or_empty(after, variable)?;
+            Ok(left.lerp(&right, *fraction))
+        }
+    }
+}
+
 fn bake_timestep(
     plan: &WeatherBakePlan,
-    local_path: &Path,
-    run_ref: &str,
+    layer_snapshot: &SpatialRunSnapshot,
+    timeline_model: WeatherModelId,
     valid_time: &str,
     tile_coords: &[TileCoord],
 ) -> Result<WeatherPmtilesArtifact, WeatherBakeError> {
     let layer = plan.layer;
+    let source = field_path_source(layer_snapshot, timeline_model, plan.model, valid_time)?;
     let tiles: Vec<PmtilesTile> = match layer {
         WeatherBakeLayer::Wind => {
             let (u_name, v_name) = layer.wind_spatial_variables().expect("wind variables");
-            let u_field = Arc::new(SpatialFieldRegridder::from_spatial_file_or_empty(
-                local_path, u_name,
-            )?);
-            let v_field = Arc::new(SpatialFieldRegridder::from_spatial_file_or_empty(
-                local_path, v_name,
-            )?);
+            let u_field = Arc::new(load_scalar_field(&source, u_name)?);
+            let v_field = Arc::new(load_scalar_field(&source, v_name)?);
             let renderer = WindWeatherTileRenderer::new(u_field.as_ref(), v_field.as_ref());
             tile_coords
                 .par_iter()
@@ -454,9 +681,7 @@ fn bake_timestep(
         }
         _ => {
             let variable = layer.spatial_variable().expect("scalar layer variable");
-            let field = Arc::new(SpatialFieldRegridder::from_spatial_file_or_empty(
-                local_path, variable,
-            )?);
+            let field = Arc::new(load_scalar_field(&source, variable)?);
             let renderer = ScalarWeatherTileRenderer::new(layer, field.as_ref());
             tile_coords
                 .par_iter()
@@ -470,7 +695,7 @@ fn bake_timestep(
         }
     };
 
-    let output_path = pmtiles_output_path(&plan.output_dir, run_ref, valid_time);
+    let output_path = pmtiles_output_path(&plan.output_dir, &layer_snapshot.run_ref, valid_time);
     let metadata = PmtilesMetadata {
         min_zoom: MIN_ZOOM,
         max_zoom: MAX_ZOOM,
@@ -478,7 +703,7 @@ fn bake_timestep(
         json: serde_json::json!({
             "model": plan.model.to_string(),
             "variable": layer.id(),
-            "run_ref": run_ref,
+            "run_ref": layer_snapshot.run_ref,
             "valid_time": valid_time,
             "global_max_zoom": GLOBAL_MAX_ZOOM,
             "regional_min_zoom": GLOBAL_MAX_ZOOM,
@@ -581,7 +806,7 @@ mod tests {
     use super::{
         WeatherBakeConfig, WeatherBakeLayer, WeatherBakePlan, WeatherPmtilesArtifact,
         WeatherPmtilesManifest, all_layers_complete, artifact_is_complete, build_bake_plans,
-        pending_objects, promote_staging_manifest, read_manifest, resolve_manifest_work,
+        pending_timeline_times, promote_staging_manifest, read_manifest, resolve_manifest_work,
         staging_manifest_path, write_manifest,
     };
     use crate::application::active_catalog::ActiveSpatialCatalog;
@@ -593,7 +818,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn pending_objects_preserves_snapshot_order_for_priority_bake() {
+    fn pending_timeline_times_preserves_snapshot_order() {
         let objects = [
             SpatialObjectLocal {
                 object_key: "a".to_string(),
@@ -627,7 +852,7 @@ mod tests {
             artifacts: BTreeMap::new(),
         };
 
-        let pending = pending_objects(&object_refs, &manifest);
+        let pending = pending_timeline_times(&object_refs, &manifest);
         assert_eq!(pending.len(), 2);
         assert_eq!(pending[0].timestamp, "2025-06-09T12:00:00Z");
     }
@@ -693,6 +918,7 @@ mod tests {
 
         let config = WeatherBakeConfig {
             cache_dir: None,
+            timeline_model: WeatherModelId::EcmwfIfs,
             plans: vec![
                 WeatherBakePlan {
                     layer: WeatherBakeLayer::Temperature2m,
@@ -890,6 +1116,119 @@ mod tests {
     }
 
     #[test]
+    fn resolve_manifest_work_purges_stale_published_bake_for_same_run_ref() {
+        let dir = std::env::temp_dir().join(format!(
+            "snowbuddy-weather-manifest-stale-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let output_dir = dir.join("temperature_2m");
+        let run_dir = output_dir.join("0600Z");
+        std::fs::create_dir_all(&run_dir).expect("create run dir");
+        let stale_tile = run_dir.join("2025-06-09T12:00:00Z.pmtiles");
+        std::fs::write(&stale_tile, b"stale").expect("write stale tile");
+
+        let objects = sample_objects();
+        let object_refs: Vec<_> = objects.iter().collect();
+        let manifest_path = dir.join("weather_pmtiles_temperature_2m_manifest.json");
+        let published = WeatherPmtilesManifest {
+            model: "ecmwf_ifs".to_string(),
+            variable: "temperature_2m".to_string(),
+            run_ref: "0600Z".to_string(),
+            default_valid_time: "2025-06-09T12:00:00Z".to_string(),
+            valid_times: vec!["2025-06-09T12:00:00Z".to_string()],
+            global_max_zoom: 4,
+            regional_min_zoom: 5,
+            regional_max_zoom: 5,
+            min_zoom: 0,
+            max_zoom: 5,
+            generated_at: Utc::now(),
+            artifacts: BTreeMap::from([(
+                "2025-06-09T12:00:00Z".to_string(),
+                WeatherPmtilesArtifact {
+                    path: stale_tile.display().to_string(),
+                    sha256: "a".repeat(64),
+                    size_bytes: 5,
+                    tile_count: 1,
+                },
+            )]),
+        };
+        write_manifest(&manifest_path, &published).expect("write published manifest");
+
+        let config = WeatherBakeConfig::default();
+        let plan = WeatherBakePlan {
+            layer: WeatherBakeLayer::Temperature2m,
+            model: WeatherModelId::EcmwfIfs,
+            output_dir: output_dir.clone(),
+            manifest_path: manifest_path.clone(),
+        };
+        let snapshot = sample_snapshot(WeatherModelId::EcmwfIfs, "0600Z", &objects);
+        let work = resolve_manifest_work(&config, &plan, &snapshot, &object_refs)
+            .expect("resolve manifest work");
+
+        assert!(!work.uses_staging);
+        assert_eq!(work.manifest.valid_times.len(), 2);
+        assert!(work.manifest.artifacts.is_empty());
+        assert!(!stale_tile.exists());
+        let on_disk = read_manifest(&manifest_path)
+            .expect("read published")
+            .expect("published exists");
+        assert_eq!(on_disk.valid_times, work.manifest.valid_times);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_manifest_work_gc_old_run_dirs_when_run_ref_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "snowbuddy-weather-manifest-gc-run-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let output_dir = dir.join("temperature_2m");
+        let old_run_dir = output_dir.join("0000Z");
+        std::fs::create_dir_all(&old_run_dir).expect("create old run dir");
+        std::fs::write(old_run_dir.join("old.pmtiles"), b"old").expect("write old tile");
+
+        let objects = sample_objects();
+        let object_refs: Vec<_> = objects.iter().collect();
+        let manifest_path = dir.join("weather_pmtiles_temperature_2m_manifest.json");
+        let published = WeatherPmtilesManifest {
+            model: "ecmwf_ifs".to_string(),
+            variable: "temperature_2m".to_string(),
+            run_ref: "0000Z".to_string(),
+            default_valid_time: "2025-06-09T12:00:00Z".to_string(),
+            valid_times: vec!["2025-06-09T12:00:00Z".to_string()],
+            global_max_zoom: 4,
+            regional_min_zoom: 5,
+            regional_max_zoom: 5,
+            min_zoom: 0,
+            max_zoom: 5,
+            generated_at: Utc::now(),
+            artifacts: BTreeMap::new(),
+        };
+        write_manifest(&manifest_path, &published).expect("write published manifest");
+
+        let config = WeatherBakeConfig::default();
+        let plan = WeatherBakePlan {
+            layer: WeatherBakeLayer::Temperature2m,
+            model: WeatherModelId::EcmwfIfs,
+            output_dir: output_dir.clone(),
+            manifest_path: manifest_path.clone(),
+        };
+        let snapshot = sample_snapshot(WeatherModelId::EcmwfIfs, "0600Z", &objects);
+        let work = resolve_manifest_work(&config, &plan, &snapshot, &object_refs)
+            .expect("resolve manifest work");
+
+        assert!(work.uses_staging);
+        assert!(!old_run_dir.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn build_bake_plans_uses_per_variable_output_and_manifest_paths() {
         use crate::infrastructure::weather_bake_profile::load_weather_bake_profile;
 
@@ -943,6 +1282,7 @@ mod tests {
         };
 
         let profile = WeatherBakeProfile {
+            timeline_model: WeatherModelId::EcmwfIfs,
             layers: vec![
                 WeatherBakeLayerSpec {
                     layer: WeatherBakeLayer::Temperature2m,

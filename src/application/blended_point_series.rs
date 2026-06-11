@@ -216,6 +216,7 @@ mod tests {
     fn build_plan_pins_snow_depth_to_profile_model() {
         let registry = open_meteo::OpenMeteoSources.registry();
         let profile = crate::infrastructure::weather_bake_profile::WeatherBakeProfile {
+            timeline_model: WeatherModelId::EcmwfIfs,
             layers: vec![
                 WeatherBakeLayerSpec {
                     layer: WeatherBakeLayer::Temperature2m,

@@ -118,6 +118,9 @@ pub enum WeatherBakeError {
     #[error(transparent)]
     TileRender(#[from] TileRenderError),
 
+    #[error(transparent)]
+    Timestamp(#[from] TimestampParseError),
+
     #[error("read file {path}")]
     ReadFile {
         path: PathBuf,
@@ -173,6 +176,9 @@ pub enum WeatherBakeError {
         variable: String,
         model: String,
     },
+
+    #[error("no native timesteps available to bake {valid_time}")]
+    MissingNativeTimestep { valid_time: String },
 }
 
 #[derive(Debug, thiserror::Error)]

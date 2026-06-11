@@ -197,6 +197,7 @@ fn spatial_service_returns_synced_metadata() {
         OmfilesDatasetReader,
         catalog,
         WeatherBakeProfile {
+            timeline_model: WeatherModelId::EcmwfIfs025,
             layers: vec![WeatherBakeLayerSpec {
                 layer: WeatherBakeLayer::Temperature2m,
                 model: WeatherModelId::EcmwfIfs025,

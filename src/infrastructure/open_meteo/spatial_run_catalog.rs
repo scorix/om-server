@@ -32,11 +32,7 @@ impl<'a> RunManifestLoader<'a> {
     }
 
     fn load(self, model: WeatherModelId) -> Result<LoadedRunManifest, OpenMeteoError> {
-        let url = format!(
-            "{}/data_run/{}/latest.json",
-            self.s3.base_url().trim_end_matches('/'),
-            model.as_str()
-        );
+        let url = spatial_latest_manifest_url(self.s3.base_url(), model);
         let body = self.s3.fetch_text(&url)?;
         let manifest: RunManifest = serde_json::from_str(&body)
             .map_err(|source| OpenMeteoError::ParseRunManifest { url, source })?;
@@ -90,5 +86,33 @@ impl SpatialRunResolver {
             run_prefix,
             objects,
         })
+    }
+}
+
+/// Open-Meteo spatial sync entry point (`data_spatial/{model}/latest.json`), not `data_run`.
+fn spatial_latest_manifest_url(base_url: &str, model: WeatherModelId) -> String {
+    format!(
+        "{}/data_spatial/{}/latest.json",
+        base_url.trim_end_matches('/'),
+        model.as_str()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spatial_latest_manifest_url;
+    use crate::domain::WeatherModelId;
+
+    #[test]
+    fn spatial_latest_manifest_uses_data_spatial_not_data_run() {
+        let url = spatial_latest_manifest_url(
+            "https://openmeteo.s3.amazonaws.com",
+            WeatherModelId::EcmwfIfs025,
+        );
+        assert_eq!(
+            url,
+            "https://openmeteo.s3.amazonaws.com/data_spatial/ecmwf_ifs025/latest.json"
+        );
+        assert!(!url.contains("/data_run/"));
     }
 }

@@ -52,6 +52,20 @@ impl WeatherBakeWorker {
                 .collect::<Vec<_>>(),
             "weather bake worker started"
         );
+        let worker = self.clone_for_blocking();
+        match tokio::task::spawn_blocking(move || {
+            WeatherBakeUseCase.prepare(&worker.bake, &worker.catalog)
+        })
+        .await
+        {
+            Ok(Ok(())) => tracing::debug!("weather bake worker prepared layers"),
+            Ok(Err(error)) => {
+                tracing::error!(error = %error, "weather bake worker prepare failed");
+            }
+            Err(error) => {
+                tracing::error!(error = %error, "weather bake worker prepare task failed");
+            }
+        }
         loop {
             while self.run_tick_if_idle().await == TickOutcome::Progress {
                 tracing::debug!("weather bake worker continuing pending run");

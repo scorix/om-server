@@ -11,7 +11,11 @@ use crate::error::MainError;
 pub struct ServerConfig {
     #[arg(long, default_value = "127.0.0.1:50051", env = "OM_SERVER_GRPC_BIND")]
     pub grpc_bind: String,
-    #[arg(long, default_value = "data/manifests", env = "OM_SERVER_WEATHER_BAKE_MANIFEST_DIR")]
+    #[arg(
+        long,
+        default_value = "data/manifests",
+        env = "OM_SERVER_WEATHER_BAKE_MANIFEST_DIR"
+    )]
     pub weather_manifest_dir: PathBuf,
     #[arg(long, default_value = "data/sync/om", env = "OM_SERVER_OM_SYNC_DIR")]
     pub om_sync_dir: PathBuf,
@@ -55,7 +59,11 @@ pub struct ServerConfig {
         env = "OM_SERVER_WEATHER_BAKE_CONFIG"
     )]
     pub weather_bake_config: PathBuf,
-    #[arg(long, default_value_t = 60, env = "OM_SERVER_WEATHER_BAKE_INTERVAL_SECS")]
+    #[arg(
+        long,
+        default_value_t = 60,
+        env = "OM_SERVER_WEATHER_BAKE_INTERVAL_SECS"
+    )]
     pub weather_bake_interval_secs: u64,
 }
 

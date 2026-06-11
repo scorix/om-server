@@ -6,6 +6,7 @@ use om_server::application::weather_bake::build_bake_plans;
 use om_server::application::weather_bake_wake::WeatherBakeWake;
 use om_server::application::weather_bake_worker::{WeatherBakeWorker, WeatherBakeWorkerConfig};
 use om_server::application::{ActiveSpatialCatalog, SpatialService};
+use om_server::domain::WeatherModelId;
 use om_server::error::MainError;
 use om_server::r#gen::FILE_DESCRIPTOR_SET;
 use om_server::r#gen::om_spatial_service_server::OmSpatialServiceServer;
@@ -37,7 +38,8 @@ async fn main() -> Result<(), MainError> {
 }
 
 async fn run_serve(config: ServerConfig) -> Result<(), MainError> {
-    let sync_models = config.parsed_sync_models()?;
+    let blend_profile = load_weather_bake_profile(&config.weather_bake_config)?;
+    let sync_models = sync_models_for_server(&config, &blend_profile)?;
     let fetcher = S3ObjectFetcher::new(config.s3_base_url.clone(), config.om_sync_dir.clone());
     let catalog = std::sync::Arc::new(ActiveSpatialCatalog::load_persisted(
         &config.om_sync_dir,
@@ -51,7 +53,6 @@ async fn run_serve(config: ServerConfig) -> Result<(), MainError> {
     );
     let bake_config = weather_bake_config(&config)?;
     let bake_wake = WeatherBakeWake::new();
-    let blend_profile = load_weather_bake_profile(&config.weather_bake_config)?;
     let worker = SpatialSyncWorker::new(
         OpenMeteoSources.registry(),
         S3ObjectFetcher::new(config.s3_base_url.clone(), config.om_sync_dir.clone()),
@@ -119,6 +120,19 @@ async fn run_serve(config: ServerConfig) -> Result<(), MainError> {
     Ok(())
 }
 
+fn sync_models_for_server(
+    config: &ServerConfig,
+    bake_profile: &om_server::infrastructure::weather_bake_profile::WeatherBakeProfile,
+) -> Result<Vec<WeatherModelId>, MainError> {
+    let mut models = config.parsed_sync_models()?;
+    for spec in &bake_profile.layers {
+        if !models.contains(&spec.model) {
+            models.push(spec.model);
+        }
+    }
+    Ok(models)
+}
+
 fn weather_bake_config(config: &ServerConfig) -> Result<Option<WeatherBakeConfig>, MainError> {
     let Some(output_dir) = config
         .weather_bake_output_dir
@@ -130,6 +144,7 @@ fn weather_bake_config(config: &ServerConfig) -> Result<Option<WeatherBakeConfig
     let profile = load_weather_bake_profile(&config.weather_bake_config)?;
     Ok(Some(WeatherBakeConfig {
         cache_dir: Some(config.weather_bake_cache_dir.clone()),
+        timeline_model: profile.timeline_model,
         plans: build_bake_plans(
             output_dir.clone(),
             config.weather_manifest_dir.clone(),
